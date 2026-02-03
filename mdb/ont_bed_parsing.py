@@ -300,7 +300,6 @@ def ont_bed_parsing(
     m_5mC_minus = np.full((n_cpg, n_samples), np.nan, dtype=np.float32)
     m_5hmC_plus  = np.full((n_cpg, n_samples), np.nan, dtype=np.float32)
     m_5hmC_minus = np.full((n_cpg, n_samples), np.nan, dtype=np.float32)
-
     last_stats = None
     for index, (file_name, bed_path) in tqdm(
         enumerate(bed_map.items()),

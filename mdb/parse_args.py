@@ -33,7 +33,7 @@ def parse_args(argv):
     # Subcommand: merge
     merge_parser = subparsers.add_parser("merge", help="mdb databases from multiple samples into a single database: COMBINE STRAND and HAPLOTYPE")
     merge_parser.add_argument( "-i", "--inputs", nargs='+', required=True, help="Input directories to merge or a text file with list of .mdb files to merge")
-    merge_parser.add_argument("-m", "--modified", help="Aggregrate ONT 5mC and 5hmC as modifiedC, for merging with PacBio", action="store_true")
+    merge_parser.add_argument("-m", "--modifiedc", help="Aggregrate ONT 5mC and 5hmC as modifiedC, for merging with PacBio", action="store_true")
     merge_parser.add_argument( "-o", "--output", required=True, help="Output directory for merged database")
     
     # Subcommand: stats
