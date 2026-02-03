@@ -5,8 +5,8 @@ import logging
 import numpy as np
 import polars as pl
 from typing import Dict, Tuple, List, Optional
-from ont_bed_parsing import ont_bed_parsing
-from pacbio_bed_parsing import pacbio_bed_parsing
+from mdb.ont_bed_parsing import ont_bed_parsing
+from mdb.pacbio_bed_parsing import pacbio_bed_parsing
 
 
 def load_index(index_npz: str):

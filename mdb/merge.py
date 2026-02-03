@@ -3,7 +3,7 @@ import glob
 import os
 import numpy as np
 from typing import Tuple, Optional, Dict, List
-
+from tqdm.auto import tqdm
 
 def process_ont_pb_no_strand_npys(
     input_mdb_folder: str,
@@ -220,7 +220,7 @@ def merge_main(args):
         out_paths[k] = out_path
 
     # Fill each column
-    for col_idx, s in enumerate(samples):
+    for col_idx, s in tqdm(enumerate(samples), total=n_samples, desc="Merging samples"):
         data = s["data"]
         for k in out_keys:
             if k in data:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import argparse
 import sys, os
-from __init__ import __version__ as version
+from mdb.__init__ import __version__ as version
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
