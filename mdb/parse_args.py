@@ -36,13 +36,13 @@ def parse_args(argv):
     merge_parser.add_argument("-m", "--modifiedc", help="Aggregrate ONT 5mC and 5hmC as modifiedC, for merging with PacBio", action="store_true")
     merge_parser.add_argument( "-o", "--output", required=True, help="Output directory for merged database")
     
-    # Subcommand: stats
     # Subcommand: PCA
     # Subcommand: strand
-    
+    # strand_parser = subparsers.add_parser("strand", help="Perform strand-specific analysis of merged mdb database")
+
 
     # Subcommand: query
-    query_parser = subparsers.add_parser("query", help="Query the population-level methylation database")
+    # query_parser = subparsers.add_parser("query", help="Query the population-level methylation database")
 
     if len(argv) == 0:
         parser.print_help(sys.stderr)
