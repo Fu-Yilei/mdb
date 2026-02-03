@@ -23,11 +23,11 @@ def parse_args(argv):
     index_parser.add_argument("-s", "--sex", default=False, action="store_true", help="Include sex chromosomes in the index, default=False")
 
     # Subcommand: create
-    create_parser = subparsers.add_parser("create", help="Create population-level methylation database")
-    create_parser.add_argument("-p", "--platform", required=True, help=f"Input platform: ont|pacbio")
+    create_parser = subparsers.add_parser("create", help="Create single sample-level methylation database")
+    create_parser.add_argument("-p", "--platform", required=True, help="Input platform: ont|pacbio")
     create_parser.add_argument("-n", "--npz", required=True, help="Reference NPZ file from mdb index")
     create_parser.add_argument("-b", "--bed", required=True, help="Input BED file with DMR indications from Modkit>=0.6.0 or Pb-CpG-tools>=3.0.0")
-    create_parser.add_argument("-o", "--output", required=True, help="Output .mdb file for the population-level methylation database")
+    create_parser.add_argument("-o", "--output", required=True, help="Output .mdb file for the single sample-level methylation database")
     create_parser.add_argument( "-c", "--min_coverage", type=int, default=5, help="Minimum coverage threshold, default=5" )
     
     # Subcommand: merge
