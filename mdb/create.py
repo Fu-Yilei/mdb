@@ -76,10 +76,9 @@ def create_main(args, logger=None):
             allowed_chroms=allowed_chroms,
             min_cov=min_cov,
         )
-        np.save(os.path.join(output_mdb, "5mC.npy"), matrices[0])
-        np.save(os.path.join(output_mdb, "5hmC.npy"), matrices[1])
+        np.save(os.path.join(output_mdb, "5mC.npy"), matrices)
         with open(os.path.join(output_mdb, "bed_map.txt"), "w") as f:
             for file_name, bed_file in bed_map.items():
                 f.write(f"{file_name}\t{bed_file}\n")
-        print(f"Saved 5mC and 5hmC matrices to {os.path.join(output_mdb, '5mC.npy')} and {os.path.join(output_mdb, '5hmC.npy')}")
+        print(f"Saved 5mC matrix to {os.path.join(output_mdb, '5mC.npy')}")
 

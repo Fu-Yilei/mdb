@@ -130,7 +130,6 @@ def fill_one_sample_pacbio(
     bed_path: str,
     col_idx: int,
     M_5mC: np.ndarray,
-    M_5hmC: np.ndarray,
     *,
     pos0: np.ndarray,
     chrom_slices: Dict[str, Tuple[int, int]],
@@ -223,7 +222,6 @@ def pacbio_bed_parsing(
     bed_map = discover_pacbio_beds(input_path)
     print(f"Discovering PacBio beds in: {bed_map}")
     m_5mC = np.full((cpg_pos0.shape[0], len(bed_map)), np.nan, dtype=np.float32)
-    m_5hmC = np.full((cpg_pos0.shape[0], len(bed_map)), np.nan, dtype=np.float32)
     for index, (file_name, bed_path) in tqdm(
         enumerate(bed_map.items()),
         desc="Processing PacBio beds",
@@ -234,11 +232,10 @@ def pacbio_bed_parsing(
             bed_path,
             index,
             m_5mC,
-            m_5hmC,
             pos0=cpg_pos0,
             chrom_slices=chrom_slices,
             allowed_chroms=allowed_chroms,
             min_cov=min_cov,
         )
         last_stats[file_name] = last_stats
-    return last_stats, (m_5mC, m_5hmC), bed_map
+    return last_stats, m_5mC, bed_map

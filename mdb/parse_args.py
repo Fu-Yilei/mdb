@@ -34,9 +34,25 @@ def parse_args(argv):
     merge_parser = subparsers.add_parser("merge", help="mdb databases from multiple samples into a single database: COMBINE STRAND and HAPLOTYPE")
     merge_parser.add_argument( "-i", "--inputs", nargs='+', required=True, help="Input directories to merge or a text file with list of .mdb files to merge")
     merge_parser.add_argument("-m", "--modifiedc", help="Aggregrate ONT 5mC and 5hmC as modifiedC, for merging with PacBio", action="store_true")
-    merge_parser.add_argument( "-o", "--output", required=True, help="Output directory for merged database")
+    merge_parser.add_argument( "-o", "--output", required=True, help="Output directory (suggest: output.mmdb) for merged database")
     
     # Subcommand: PCA
+    pca_parser = subparsers.add_parser("pca", help="Perform PCA on the merged mdb database")
+    pca_parser.add_argument("-i", "--input", required=True, help="Input merged mdb database for PCA")
+    pca_parser.add_argument("-o", "--outdir", required=True, help="Output directory for PCA results")
+    pca_parser.add_argument("-m", "--metadata",  help="Metadata TSV file with sample information, must contain 'sample' column matching merged database sample names")
+    pca_parser.add_argument("-pn", "--pairplot_pcs_n", type=int, default=5, help="Top n PCs to include in pairplot, default=5")
+    pca_parser.add_argument("--frac_cpgs", type=float, default=0.1, help="Fraction of eligible CpGs to sample for PCA fit, default=0.1")
+    pca_parser.add_argument("--n_pcs", type=int, default=10, help="Number of PCs, default=10")
+    pca_parser.add_argument("--min_frac_present", type=float, default=0.8, help="Min fraction of samples with non-NaN at CpG, default=0.8")
+    pca_parser.add_argument("--batch_rows", type=int, default=400_000, help="Rows per streaming block, increase for larger RAM usage, default=400,000")
+    pca_parser.add_argument("--seed", type=int, default=1, help="Random seed, default=1")
+    pca_parser.add_argument("-u", "--umap", action="store_true", help="Perform UMAP embedding")
+    pca_parser.add_argument("--umap_neighbors", type=int, default=15, help="UMAP number of neighbors, default=15")
+    pca_parser.add_argument("--umap_min_dist", type=float, default=0.1, help="UMAP minimum distance, default=0.1")
+    pca_parser.add_argument("--umap_metric", type=str, default="euclidean" ,help="UMAP metric, default=euclidean")
+    pca_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
+    
     # Subcommand: strand
     # strand_parser = subparsers.add_parser("strand", help="Perform strand-specific analysis of merged mdb database")
 
