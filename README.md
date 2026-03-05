@@ -23,8 +23,8 @@ mdb --version
 - **Sample bundle (`.smdb`)**: one sample, multiple track views (assay/haplotype/strand).
 - **Cohort store (`.mmdb`)**: merged sample bundles for population-scale queries.
 - **Backends**:
-  - `npy` (default)
-  - `zarr` (optional, compressed, block-aligned writes during merge)
+  - `zarr` (default, compressed, block-aligned merge writes)
+  - `npy` (optional compatibility backend)
 
 ## Quick Start
 
@@ -68,23 +68,12 @@ mdb create \
 
 ### 3) Merge sample bundles into a cohort
 
-Default backend (`npy`):
+Default backend (`zarr`):
 
 ```bash
 mdb merge \
   -i sample_ont.smdb sample_pb.smdb \
   -o cohort.mmdb \
-  --workers 2 \
-  --block-size 64
-```
-
-Zarr backend:
-
-```bash
-mdb merge \
-  -i sample_ont.smdb sample_pb.smdb \
-  -o cohort_zarr.mmdb \
-  --cohort-backend zarr \
   --workers 2 \
   --block-size 64 \
   --zarr-row-chunk 65536 \
@@ -92,6 +81,17 @@ mdb merge \
   --zarr-clevel 5 \
   --zarr-shuffle bitshuffle \
   --zarr-codec-threads 4
+```
+
+NPY backend (explicit):
+
+```bash
+mdb merge \
+  -i sample_ont.smdb sample_pb.smdb \
+  -o cohort_npy.mmdb \
+  --cohort-backend npy \
+  --workers 2 \
+  --block-size 64
 ```
 
 Build modifiedC view (`5mC + 5hmC` where available):

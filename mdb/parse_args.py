@@ -47,7 +47,7 @@ def parse_args(argv):
     merge_parser.add_argument("-o", "--output", required=True, help="Output cohort store directory path")
     merge_parser.add_argument("-w", "--workers", type=int, default=1, help="Parallel workers for per-view merge assembly, default=1")
     merge_parser.add_argument("--block-size", type=int, default=64, help="Samples per cohort block shard, default=64")
-    merge_parser.add_argument("--cohort-backend", choices=("npy", "zarr"), default="npy", help="Cohort storage backend, default=npy")
+    merge_parser.add_argument("--cohort-backend", choices=("npy", "zarr"), default="zarr", help="Cohort storage backend, default=zarr")
     merge_parser.add_argument("--zarr-row-chunk", type=int, default=65536, help="Row chunk size for zarr cohort backend, default=65536")
     merge_parser.add_argument("--zarr-codec", choices=("zstd",), default="zstd", help="Compression codec for zarr backend, default=zstd")
     merge_parser.add_argument("--zarr-clevel", type=int, default=5, help="Compression level for zarr backend, default=5")
@@ -63,7 +63,12 @@ def parse_args(argv):
     append_parser.add_argument("-c", "--cohort", required=True, help="Existing cohort store path to update in place")
     append_parser.add_argument("-i", "--inputs", nargs="+", required=True, help="Input sample bundle directories, globs, or a .txt manifest")
     append_parser.add_argument("-m", "--modifiedc", action="store_true", help="Append into modifiedC views by combining 5mC and 5hmC")
-    append_parser.add_argument("--cohort-backend", choices=("npy", "zarr"), default="npy", help="Cohort storage backend for new views, default=npy")
+    append_parser.add_argument(
+        "--cohort-backend",
+        choices=("npy", "zarr"),
+        default=None,
+        help="Cohort storage backend override; default=existing cohort backend",
+    )
     append_parser.add_argument("--zarr-row-chunk", type=int, default=65536, help="Row chunk size for zarr cohort backend, default=65536")
     append_parser.add_argument("--zarr-codec", choices=("zstd",), default="zstd", help="Compression codec for zarr backend, default=zstd")
     append_parser.add_argument("--zarr-clevel", type=int, default=5, help="Compression level for zarr backend, default=5")

@@ -12,6 +12,7 @@ from mdb.merge import append_main, merge_main
 from mdb.schema import TrackKey
 from mdb.storage import (
     available_views,
+    load_cohort_manifest,
     load_view_columns,
     load_view_uint16_matrix,
     query_cohort_point,
@@ -134,6 +135,23 @@ def append_bundles(cohort: Path, inputs: list[Path], backend: str):
     )
 
 
+def merge_bundles_default_backend(inputs: list[Path], output: Path):
+    merge_main(
+        SimpleNamespace(
+            inputs=[str(p) for p in inputs],
+            output=str(output),
+            modifiedc=False,
+            workers=1,
+            block_size=2,
+            zarr_row_chunk=2,
+            zarr_codec="zstd",
+            zarr_clevel=5,
+            zarr_shuffle="bitshuffle",
+            zarr_codec_threads=1,
+        )
+    )
+
+
 def test_merge_zarr_matches_npy(tmp_path: Path):
     ws = _workspace(tmp_path)
     ont_bundle = ws["tmp"] / "sample_ont.smdb"
@@ -165,6 +183,17 @@ def test_merge_zarr_matches_npy(tmp_path: Path):
     range_zarr = query_cohort_range(str(cohort_zarr), key, "pb_a", "chr1", 1, 7)
     assert range_npy["count"] == range_zarr["count"]
     assert [r["value_percent"] for r in range_npy["records"]] == [r["value_percent"] for r in range_zarr["records"]]
+
+
+def test_merge_default_backend_is_zarr(tmp_path: Path):
+    ws = _workspace(tmp_path)
+    ont_bundle = ws["tmp"] / "sample_ont.smdb"
+    create_bundle(ws["index"], "ont", ws["ont_dir"], ont_bundle, "ont_a")
+    cohort_default = ws["tmp"] / "cohort_default.mmdb"
+    merge_bundles_default_backend([ont_bundle], cohort_default)
+    manifest = load_cohort_manifest(str(cohort_default))
+    assert manifest["backend"] == "zarr"
+    assert manifest["kind"] == "cohort_store_zarr"
 
 
 def test_append_zarr_adds_columns(tmp_path: Path):

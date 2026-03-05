@@ -37,7 +37,7 @@ class ColumnEntry:
 
 
 def _normalize_backend(value: str | None) -> str:
-    backend = (value or "npy").strip().lower()
+    backend = (value or "zarr").strip().lower()
     if backend not in {"npy", "zarr"}:
         raise ValueError(f"Unsupported cohort backend: {value}")
     return backend
@@ -422,7 +422,7 @@ def merge_main(args):
     modifiedc = bool(args.modifiedc)
     workers = max(int(getattr(args, "workers", 1)), 1)
     block_size = max(int(getattr(args, "block_size", 64)), 1)
-    backend = _normalize_backend(getattr(args, "cohort_backend", "npy"))
+    backend = _normalize_backend(getattr(args, "cohort_backend", None))
     zarr_config = _zarr_config_from_args(args)
     _configure_zarr_threads(zarr_config, backend)
 
@@ -492,7 +492,8 @@ def append_main(args):
 
     manifest = load_cohort_manifest(cohort_path)
     existing_backend = cohort_backend(cohort_path)
-    requested_backend = _normalize_backend(getattr(args, "cohort_backend", existing_backend))
+    requested_backend_arg = getattr(args, "cohort_backend", None)
+    requested_backend = existing_backend if requested_backend_arg is None else _normalize_backend(requested_backend_arg)
     if requested_backend != existing_backend:
         print(
             f"Warning: ignoring --cohort-backend={requested_backend}; "
