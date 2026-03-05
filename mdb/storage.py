@@ -253,7 +253,8 @@ class DenseSampleTrackReader:
         self.input_tag = str(self.track_meta["input_tag"])
         self.source_path = str(self.track_meta["source_path"])
         self.min_coverage = int(self.track_meta["min_coverage"])
-        self.n_obs_rows = int(self.track_meta["n_obs_rows"])
+        # Backward compatibility: older sample bundles may not have n_obs_rows.
+        self.n_obs_rows = int(self.track_meta.get("n_obs_rows", -1))
         self.chroms_present = list(self.track_meta.get("chroms_present", []))
         self.index_path = str(self.manifest["index_path"])
         self.chroms, self.chrom_offsets, self.pos0 = load_reference_index(self.index_path)
