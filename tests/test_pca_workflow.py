@@ -45,32 +45,35 @@ def make_bundle(path: Path, index_path: Path, sample_id: str, values: list[int])
     )
 
 
-def run_pca(input_path: Path, outdir: Path) -> None:
-    pca_main(
-        SimpleNamespace(
-            input=str(input_path),
-            outdir=str(outdir),
-            metadata=None,
-            assay="5mC",
-            haplotype="combined",
-            strand="combined",
-            pairplot_pcs_n=2,
-            frac_cpgs=1.0,
-            n_pcs=2,
-            min_frac_present=0.0,
-            batch_rows=2,
-            seed=1,
-            umap=False,
-            umap_neighbors=15,
-            umap_min_dist=0.1,
-            umap_metric="euclidean",
-            pairplot_mode="none",
-            pairplot_hue=None,
-            pairplot_diag_kind="hist",
-            pairplot_corner=True,
-            verbose=False,
-        )
+def run_pca(input_path: Path, outdir: Path, **overrides) -> None:
+    args = dict(
+        input=str(input_path),
+        outdir=str(outdir),
+        metadata=None,
+        assay="5mC",
+        haplotype="combined",
+        strand="combined",
+        pairplot_pcs_n=2,
+        frac_cpgs=1.0,
+        n_pcs=2,
+        min_frac_present=0.0,
+        batch_rows=2,
+        seed=1,
+        umap=False,
+        umap_neighbors=15,
+        umap_min_dist=0.1,
+        umap_metric="euclidean",
+        pairplot_mode="none",
+        pairplot_hue=None,
+        pairplot_diag_kind="hist",
+        pairplot_corner=True,
+        outlier_detect=False,
+        outlier_alpha=0.999,
+        outlier_n_pcs=10,
+        verbose=False,
     )
+    args.update(overrides)
+    pca_main(SimpleNamespace(**args))
 
 
 def assert_outputs(outdir: Path, expected_rows: int, expected_mode: str) -> None:
@@ -143,3 +146,32 @@ def test_pca_on_legacy_merged_folder(tmp_path: Path):
     outdir = tmp_path / "pca_legacy"
     run_pca(legacy, outdir)
     assert_outputs(outdir, expected_rows=2, expected_mode="legacy_npy")
+
+
+def test_pca_outlier_artifacts(tmp_path: Path):
+    legacy = tmp_path / "legacy_outlier"
+    legacy.mkdir()
+    (legacy / "columns.txt").write_text("/synthetic/s1.smdb\n/synthetic/s2.smdb\n/synthetic/s3.smdb\n")
+    arr = np.asarray(
+        [
+            [0.10, 0.11, 0.95],
+            [0.12, 0.13, 0.96],
+            [0.18, 0.17, 0.94],
+            [0.20, 0.22, 0.98],
+        ],
+        dtype=np.float32,
+    )
+    np.save(legacy / "5mC.npy", arr)
+
+    outdir = tmp_path / "pca_outlier"
+    run_pca(legacy, outdir, outlier_detect=True, outlier_alpha=0.99, outlier_n_pcs=2)
+
+    assert (outdir / "outlier_report.tsv").exists()
+    assert (outdir / "outliers_only.tsv").exists()
+    assert (outdir / "pca_with_outliers_marked.html").exists()
+    assert (outdir / "pca_no_outliers.html").exists()
+    assert (outdir / "pca_pairplot_no_outliers.png").exists()
+
+    df = pd.read_csv(outdir / "embedding.tsv", sep="\t")
+    assert "is_outlier" in df.columns
+    assert "mahalanobis_pc" in df.columns

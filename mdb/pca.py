@@ -9,6 +9,9 @@ Outputs:
   pca.html (+ pca.png when plotly image engine exists)
   umap.html (+ umap.png when requested and available)
   pca_pairplot.png
+  (optional) outlier_report.tsv, outliers_only.tsv,
+             pca_with_outliers_marked.html, pca_no_outliers.html,
+             pca_pairplot_no_outliers.png
 """
 
 import os
@@ -31,6 +34,7 @@ import plotly.graph_objects as go
 
 import seaborn as sns
 import matplotlib.pyplot as plt
+from scipy.stats import chi2
 
 from mdb.schema import TrackKey
 from mdb.storage import detect_store_kind, load_view_reader
@@ -412,22 +416,79 @@ def plotly_color_options(meta: pd.DataFrame | None, out: pd.DataFrame, n_pcs: in
     return opts, hover_cols
 
 
-def make_dropdown_scatter(df, x, y, color_cols, hover_cols, title):
+def build_color_styles(df: pd.DataFrame, color_cols: list[str]) -> dict[str, dict[str, object]]:
+    palette = (
+        px.colors.qualitative.Safe
+        + px.colors.qualitative.Set3
+        + px.colors.qualitative.Plotly
+        + px.colors.qualitative.Dark24
+    )
+    styles: dict[str, dict[str, object]] = {}
+    for col in color_cols:
+        if col not in df.columns:
+            continue
+        vals = df[col].astype(str).fillna("NA")
+        ordered = sorted(vals.unique().tolist())
+        cmap = {v: palette[i % len(palette)] for i, v in enumerate(ordered)}
+        styles[col] = {"ordered": ordered, "cmap": cmap}
+    return styles
+
+
+def make_dropdown_scatter(
+    df,
+    x,
+    y,
+    color_cols,
+    hover_cols,
+    title,
+    color_styles: dict[str, dict[str, object]] | None = None,
+    symbol_col: str | None = None,
+    symbol_map: dict[str, str] | None = None,
+):
+    scatter_kwargs: dict[str, object] = {}
+    if symbol_col and symbol_col in df.columns:
+        scatter_kwargs["symbol"] = symbol_col
+        if symbol_map:
+            scatter_kwargs["symbol_map"] = symbol_map
+
     if not color_cols:
-        fig = px.scatter(df, x=x, y=y, hover_data=hover_cols, title=title)
+        fig = px.scatter(df, x=x, y=y, hover_data=hover_cols, title=title, **scatter_kwargs)
         fig.update_layout(template="plotly_white", width=1000, height=800, margin=dict(l=60, r=60, t=80, b=60))
         return fig
 
     master = go.Figure()
     groups = []
     for i, col in enumerate(color_cols):
-        tmp = px.scatter(df, x=x, y=y, color=df[col].astype(str), hover_data=hover_cols, title=f"{title} (color_by={col})")
+        if col not in df.columns:
+            continue
+        tmp_df = df.copy()
+        tmp_df[col] = tmp_df[col].astype(str)
+        scatter_args: dict[str, object] = dict(scatter_kwargs)
+        style = (color_styles or {}).get(col, {})
+        if "ordered" in style:
+            scatter_args["category_orders"] = {col: style["ordered"]}
+        if "cmap" in style:
+            scatter_args["color_discrete_map"] = style["cmap"]
+        tmp = px.scatter(
+            tmp_df,
+            x=x,
+            y=y,
+            color=col,
+            hover_data=hover_cols,
+            title=f"{title} (color_by={col})",
+            **scatter_args,
+        )
         start = len(master.data)
         for tr in tmp.data:
             tr.visible = (i == 0)
             master.add_trace(tr)
         end = len(master.data)
         groups.append((col, start, end))
+
+    if not groups:
+        fig = px.scatter(df, x=x, y=y, hover_data=hover_cols, title=title, **scatter_kwargs)
+        fig.update_layout(template="plotly_white", width=1000, height=800, margin=dict(l=60, r=60, t=80, b=60))
+        return fig
 
     buttons = []
     n_tr = len(master.data)
@@ -507,6 +568,178 @@ def write_plotly_image_safe(fig, path: str, logger: logging.Logger) -> bool:
         return False
 
 
+def detect_outliers_mahalanobis(
+    out: pd.DataFrame,
+    outlier_n_pcs: int,
+    outlier_alpha: float,
+    logger: logging.Logger | None = None,
+) -> tuple[pd.DataFrame, dict[str, object]]:
+    alpha = float(outlier_alpha)
+    if not (0.0 < alpha < 1.0):
+        raise ValueError(f"--outlier_alpha must be in (0,1); got {outlier_alpha}")
+
+    n_use = max(int(outlier_n_pcs), 1)
+    pc_cols = [f"PC{i+1}" for i in range(n_use) if f"PC{i+1}" in out.columns]
+    if not pc_cols:
+        out2 = out.copy()
+        out2["mahalanobis_pc"] = np.nan
+        out2["is_outlier"] = False
+        out2["outlier_status"] = "inlier"
+        info = {
+            "enabled": True,
+            "method": "mahalanobis",
+            "alpha": alpha,
+            "cutoff": None,
+            "pc_cols": [],
+            "outlier_count": 0,
+            "reason": "no_pc_columns",
+        }
+        return out2, info
+
+    out2 = out.copy()
+    X = out2[pc_cols].to_numpy(dtype=np.float64, copy=True)
+    finite_rows = np.isfinite(X).all(axis=1)
+
+    out2["mahalanobis_pc"] = np.nan
+    out2["is_outlier"] = False
+    out2["outlier_status"] = "inlier"
+
+    if int(finite_rows.sum()) < 3:
+        info = {
+            "enabled": True,
+            "method": "mahalanobis",
+            "alpha": alpha,
+            "cutoff": None,
+            "pc_cols": pc_cols,
+            "outlier_count": 0,
+            "reason": "insufficient_finite_rows",
+        }
+        if logger:
+            logger.warning("Outlier detection skipped: insufficient finite rows")
+        return out2, info
+
+    Xf = X[finite_rows]
+    mu = Xf.mean(axis=0)
+    cov = np.atleast_2d(np.cov(Xf, rowvar=False))
+    inv_cov = np.linalg.pinv(cov)
+    d = Xf - mu
+    md2 = np.einsum("ij,jk,ik->i", d, inv_cov, d)
+
+    cutoff = float(chi2.ppf(alpha, df=len(pc_cols)))
+    out_mask = md2 > cutoff
+
+    md_full = np.full(shape=(len(out2),), fill_value=np.nan, dtype=np.float64)
+    mask_full = np.zeros(shape=(len(out2),), dtype=bool)
+    md_full[finite_rows] = md2
+    mask_full[finite_rows] = out_mask
+
+    out2["mahalanobis_pc"] = md_full
+    out2["is_outlier"] = mask_full
+    out2["outlier_status"] = np.where(mask_full, "outlier", "inlier")
+
+    info = {
+        "enabled": True,
+        "method": "mahalanobis",
+        "alpha": alpha,
+        "cutoff": cutoff,
+        "pc_cols": pc_cols,
+        "outlier_count": int(mask_full.sum()),
+        "finite_rows": int(finite_rows.sum()),
+    }
+    if logger:
+        logger.info(
+            f"Outlier detection: method=mahalanobis, alpha={alpha}, "
+            f"pc_cols={len(pc_cols)}, outliers={int(mask_full.sum())}/{len(out2)}"
+        )
+    return out2, info
+
+
+def write_outlier_artifacts(
+    out: pd.DataFrame,
+    sample_coords: np.ndarray,
+    color_cols: list[str],
+    hover_cols: list[str],
+    color_styles: dict[str, dict[str, object]],
+    hue: str | None,
+    args,
+    outdir: str,
+    matrix_key: str,
+    logger: logging.Logger,
+    png_ok: bool,
+) -> None:
+    if "is_outlier" not in out.columns:
+        return
+
+    outlier_report = os.path.join(outdir, "outlier_report.tsv")
+    outliers_only = os.path.join(outdir, "outliers_only.tsv")
+    out.to_csv(outlier_report, sep="\t", index=False)
+    out.loc[out["is_outlier"]].sort_values("mahalanobis_pc", ascending=False).to_csv(outliers_only, sep="\t", index=False)
+
+    marked_hover = list(hover_cols)
+    for c in ("outlier_status", "mahalanobis_pc", "is_outlier"):
+        if c in out.columns and c not in marked_hover:
+            marked_hover.append(c)
+
+    marked_color = ["outlier_status"] + [c for c in color_cols if c != "outlier_status" and c in out.columns]
+    marked_styles = dict(color_styles)
+    marked_styles["outlier_status"] = {
+        "ordered": ["inlier", "outlier"],
+        "cmap": {"inlier": "#94a3b8", "outlier": "#dc2626"},
+    }
+    fig_marked = make_dropdown_scatter(
+        out,
+        "PC1",
+        "PC2",
+        marked_color,
+        marked_hover,
+        f"PCA sample coords (PC1 vs PC2) [{matrix_key}] with outliers marked",
+        color_styles=marked_styles,
+        symbol_col="outlier_status",
+        symbol_map={"inlier": "circle", "outlier": "x"},
+    )
+    marked_html = os.path.join(outdir, "pca_with_outliers_marked.html")
+    fig_marked.write_html(marked_html, include_plotlyjs="cdn")
+    if png_ok:
+        write_plotly_image_safe(fig_marked, os.path.join(outdir, "pca_with_outliers_marked.png"), logger)
+
+    inlier_mask = ~out["is_outlier"].to_numpy(dtype=bool)
+    inlier_df = out.loc[inlier_mask].copy()
+    if inlier_df.empty:
+        logger.warning("Skipping no-outlier plots: no inlier samples")
+        return
+    inlier_color = [c for c in color_cols if c in inlier_df.columns]
+    fig_inlier = make_dropdown_scatter(
+        inlier_df,
+        "PC1",
+        "PC2",
+        inlier_color,
+        hover_cols,
+        f"PCA sample coords (PC1 vs PC2) [{matrix_key}] no outliers",
+        color_styles=color_styles,
+    )
+    inlier_html = os.path.join(outdir, "pca_no_outliers.html")
+    fig_inlier.write_html(inlier_html, include_plotlyjs="cdn")
+    if png_ok:
+        write_plotly_image_safe(fig_inlier, os.path.join(outdir, "pca_no_outliers.png"), logger)
+
+    n_pair = max(1, min(int(args.pairplot_pcs_n), int(sample_coords.shape[1])))
+    pcs = tuple(f"PC{i}" for i in range(1, n_pair + 1))
+    if int(inlier_mask.sum()) >= 2:
+        manifest_no_outlier = inlier_df.drop(columns=[f"PC{i+1}" for i in range(int(sample_coords.shape[1]))], errors="ignore")
+        hue2 = hue if hue in manifest_no_outlier.columns else None
+        write_pairplot_png(
+            scores=np.asarray(sample_coords[inlier_mask, :], dtype=np.float32),
+            manifest=manifest_no_outlier,
+            out_png=os.path.join(outdir, "pca_pairplot_no_outliers.png"),
+            pcs=pcs,
+            hue=hue2,
+            diag_kind=getattr(args, "pairplot_diag_kind", "kde"),
+            corner=bool(getattr(args, "pairplot_corner", False)),
+        )
+    else:
+        logger.warning("Skipping pca_pairplot_no_outliers.png: fewer than 2 inlier samples")
+
+
 # ----------------------------
 # MAIN entry (submodule)
 # ----------------------------
@@ -568,6 +801,16 @@ def pca_main(args):
         out, meta = maybe_merge_metadata(out, getattr(args, "metadata", None), logger=logger)
         out = maybe_use_concise_sample_ids(out)
 
+        outlier_enabled = bool(getattr(args, "outlier_detect", False))
+        outlier_info: dict[str, object] = {"enabled": outlier_enabled}
+        if outlier_enabled:
+            out, outlier_info = detect_outliers_mahalanobis(
+                out=out,
+                outlier_n_pcs=int(getattr(args, "outlier_n_pcs", 10)),
+                outlier_alpha=float(getattr(args, "outlier_alpha", 0.999)),
+                logger=logger,
+            )
+
         out_tsv = os.path.join(outdir, "embedding.tsv")
         out.to_csv(out_tsv, sep="\t", index=False)
 
@@ -589,21 +832,39 @@ def pca_main(args):
                 else None,
                 umap_ran=bool(did_umap),
                 plotly_png_supported=bool(png_ok),
+                outlier_detection=outlier_info,
             )
         )
         with open(os.path.join(outdir, "params.json"), "w") as f:
             json.dump(params, f, indent=2)
 
         color_cols, hover_cols = plotly_color_options(meta, out, args.n_pcs, did_umap)
+        color_styles = build_color_styles(out, color_cols)
 
-        pca_fig = make_dropdown_scatter(out, "PC1", "PC2", color_cols, hover_cols, f"PCA sample coords (PC1 vs PC2) [{ctx.matrix_key}]")
+        pca_fig = make_dropdown_scatter(
+            out,
+            "PC1",
+            "PC2",
+            color_cols,
+            hover_cols,
+            f"PCA sample coords (PC1 vs PC2) [{ctx.matrix_key}]",
+            color_styles=color_styles,
+        )
         pca_html = os.path.join(outdir, "pca.html")
         pca_fig.write_html(pca_html, include_plotlyjs="cdn")
         if png_ok:
             write_plotly_image_safe(pca_fig, os.path.join(outdir, "pca.png"), logger)
 
         if did_umap:
-            umap_fig = make_dropdown_scatter(out, "UMAP1", "UMAP2", color_cols, hover_cols, f"UMAP (on PCA coords) [{ctx.matrix_key}]")
+            umap_fig = make_dropdown_scatter(
+                out,
+                "UMAP1",
+                "UMAP2",
+                color_cols,
+                hover_cols,
+                f"UMAP (on PCA coords) [{ctx.matrix_key}]",
+                color_styles=color_styles,
+            )
             umap_html = os.path.join(outdir, "umap.html")
             umap_fig.write_html(umap_html, include_plotlyjs="cdn")
             if png_ok:
@@ -623,6 +884,21 @@ def pca_main(args):
             diag_kind=getattr(args, "pairplot_diag_kind", "kde"),
             corner=bool(getattr(args, "pairplot_corner", False)),
         )
+
+        if outlier_enabled:
+            write_outlier_artifacts(
+                out=out,
+                sample_coords=sample_coords,
+                color_cols=color_cols,
+                hover_cols=hover_cols,
+                color_styles=color_styles,
+                hue=hue,
+                args=args,
+                outdir=outdir,
+                matrix_key=ctx.matrix_key,
+                logger=logger,
+                png_ok=png_ok,
+            )
     finally:
         ctx.source.close()
 

@@ -110,6 +110,23 @@ def parse_args(argv):
     pca_parser.add_argument("--pairplot-hue", help="Preferred metadata column for pairplot hue when --pairplot-mode metadata")
     pca_parser.add_argument("--pairplot_diag_kind", choices=("kde", "hist"), default="kde", help="Pairplot diagonal kind, default=kde")
     pca_parser.add_argument("--pairplot_corner", action="store_true", help="Use lower triangle only for pairplot")
+    pca_parser.add_argument(
+        "--outlier_detect",
+        action="store_true",
+        help="Enable outlier detection and emit outlier/no-outlier reports and plots",
+    )
+    pca_parser.add_argument(
+        "--outlier_alpha",
+        type=float,
+        default=0.999,
+        help="Chi-square alpha cutoff for Mahalanobis outlier detection (0<alpha<1), default=0.999",
+    )
+    pca_parser.add_argument(
+        "--outlier_n_pcs",
+        type=int,
+        default=10,
+        help="Number of leading PCs used for outlier detection, default=10",
+    )
     pca_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
 
     query_parser = subparsers.add_parser("query", help="Query a sample bundle or cohort store at one CpG locus")

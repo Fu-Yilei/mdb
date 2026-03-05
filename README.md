@@ -148,14 +148,26 @@ mdb pca \
   --haplotype combined \
   --strand combined \
   --n_pcs 10 \
-  --frac_cpgs 0.1
+  --frac_cpgs 0.1 \
+  --outlier_detect \
+  --outlier_alpha 0.999 \
+  --outlier_n_pcs 10
 ```
+
+When `--outlier_detect` is enabled, `pca` also writes:
+
+- `outlier_report.tsv` (all samples with outlier columns),
+- `outliers_only.tsv` (flagged samples),
+- `pca_with_outliers_marked.html`,
+- `pca_no_outliers.html`,
+- `pca_pairplot_no_outliers.png`.
 
 ## Important Notes
 
 - `create --reader` currently defaults to `scan` and the active create path uses scan-based reading.
 - `merge` and `append` require sample bundles created by current `mdb create` (manifest-based `.smdb` layout).
 - `pca` now supports both current cohort stores (`.mmdb`) and legacy flat merged `.npy` folders.
+- PCA color categories are sorted before plotting so colors stay stable across full vs no-outlier comparisons.
 
 ## License
 
