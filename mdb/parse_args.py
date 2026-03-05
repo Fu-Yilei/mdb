@@ -20,7 +20,7 @@ def parse_args(argv):
     index_parser.add_argument("-o", "--output", required=True, help="Output NPZ file for indexed CpG locations")
     index_parser.add_argument("-s", "--sex", default=False, action="store_true", help="Include chrX and chrY in the index")
 
-    create_parser = subparsers.add_parser("create", help="Create a sample-centric .npy methylation bundle directory")
+    create_parser = subparsers.add_parser("create", help="Create a sample bundle directory (.smdb)")
     create_parser.add_argument("-p", "--platform", required=True, help="Input platform: ont|pacbio")
     create_parser.add_argument("-n", "--npz", required=True, help="Reference NPZ file from mdb index")
     create_parser.add_argument("-b", "--bed", required=True, help="Input BED file, BED prefix, or BED directory")
@@ -31,7 +31,7 @@ def parse_args(argv):
         "--reader",
         choices=("auto", "scan", "tabix"),
         default="scan",
-        help="BED reader implementation, default=scan",
+        help="BED reader implementation, default=scan (current create path uses scan)",
     )
     create_parser.add_argument(
         "-w",
@@ -41,7 +41,7 @@ def parse_args(argv):
         help="Per-file workers for tabix-backed chromosome fetch, default=1",
     )
 
-    merge_parser = subparsers.add_parser("merge", help="Merge sample bundles into a cohort .npy store with separate track views")
+    merge_parser = subparsers.add_parser("merge", help="Merge sample bundles into a cohort store directory (.mmdb)")
     merge_parser.add_argument("-i", "--inputs", nargs="+", required=True, help="Input sample bundle directories, globs, or a .txt manifest")
     merge_parser.add_argument("-m", "--modifiedc", action="store_true", help="Build modifiedC cohort views by combining 5mC and 5hmC")
     merge_parser.add_argument("-o", "--output", required=True, help="Output cohort store directory path")
@@ -75,8 +75,8 @@ def parse_args(argv):
     )
     append_parser.add_argument("--zarr-codec-threads", type=int, default=4, help="Codec threads for zarr backend, default=4")
 
-    pca_parser = subparsers.add_parser("pca", help="Perform PCA on one explicit cohort track view")
-    pca_parser.add_argument("-i", "--input", required=True, help="Input merged cohort store")
+    pca_parser = subparsers.add_parser("pca", help="Legacy PCA on flat merged .npy folder")
+    pca_parser.add_argument("-i", "--input", required=True, help="Input legacy merged folder with columns.tsv/txt and *.npy")
     pca_parser.add_argument("-o", "--outdir", required=True, help="Output directory for PCA results")
     pca_parser.add_argument("-m", "--metadata", help="Metadata TSV/CSV with sample_id or id column")
     pca_parser.add_argument("--assay", default="5mC", help="Track assay to analyze, default=5mC")
