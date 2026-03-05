@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """
-pca_umap_from_npy.py (SUBMODULE, simplified)
+PCA/UMAP on:
+- modern cohort stores (.mmdb; npy/zarr backends, explicit track view), or
+- legacy flat merged .npy folders.
 
-- Load merged .npy matrix (mmap), pick: modifiedC > 5mC > 5hmC
-- Load sample order from columns.tsv (preferred) or columns.txt
-- Fit IPCA on X (n_cpgs x n_samples) using CpGs as observations, samples as features
-- Output sample coordinates as PC1..PCn (dual/loadings coords; good for embedding samples)
-- Optional UMAP on those coordinates
-- Write:
-    embedding.tsv, params.json, pca_umap.log
-    pca.html (+ pca.png if plotly image engine exists)
-    umap.html (+ umap.png if plotly image engine exists, and args.umap)
-    pca_pairplot.png (always)
-
-Minimal dependencies:
-  numpy pandas scikit-learn umap-learn plotly tqdm seaborn matplotlib
+Outputs:
+  embedding.tsv, params.json, pca_umap.log
+  pca.html (+ pca.png when plotly image engine exists)
+  umap.html (+ umap.png when requested and available)
+  pca_pairplot.png
 """
 
 import os
@@ -24,6 +18,7 @@ import time
 import glob
 import logging
 from datetime import datetime
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -36,6 +31,22 @@ import plotly.graph_objects as go
 
 import seaborn as sns
 import matplotlib.pyplot as plt
+
+from mdb.schema import TrackKey
+from mdb.storage import detect_store_kind, load_view_reader
+
+
+@dataclass
+class InputContext:
+    mode: str
+    store_kind: str | None
+    sample_ids: list[str]
+    sample_paths: list[str]
+    matrix_key: str
+    matrix_path: str
+    source: object
+    out_columns: dict[str, list[str]]
+    raw_shape: tuple[int, ...] | None = None
 
 
 # ----------------------------
@@ -97,26 +108,122 @@ def pick_matrix_path(merged_dir: str) -> tuple[str, str]:
     raise FileNotFoundError("No modifiedC.npy / 5mC.npy / 5hmC.npy found in merged folder")
 
 
-def load_mmap_matrix_oriented(matrix_path: str, n_samples: int) -> tuple[np.ndarray, np.ndarray]:
-    X = np.load(matrix_path, mmap_mode="r")
-    if X.shape[1] == n_samples:
-        return X, X
-    if X.shape[0] == n_samples:
-        return X, X.T
-    raise ValueError(f"Sample count mismatch: n_samples={n_samples}, npy_shape={X.shape}")
+class LegacyNpyMatrixSource:
+    def __init__(self, matrix_path: str, n_samples: int):
+        raw = np.load(matrix_path, mmap_mode="r")
+        if raw.shape[1] == n_samples:
+            X = raw
+        elif raw.shape[0] == n_samples:
+            X = raw.T
+        else:
+            raise ValueError(f"Sample count mismatch: n_samples={n_samples}, npy_shape={raw.shape}")
+        self.raw = raw
+        self.X = X
+        self.shape = X.shape
+
+    def iter_blocks(self, batch_rows: int):
+        n_rows = int(self.shape[0])
+        for start in range(0, n_rows, batch_rows):
+            yield np.asarray(self.X[start : min(start + batch_rows, n_rows), :], dtype=np.float32)
+
+    def read_rows(self, row_idx: np.ndarray) -> np.ndarray:
+        return np.asarray(self.X[row_idx, :], dtype=np.float32)
+
+    def close(self) -> None:
+        return None
+
+
+class ReaderMatrixSource:
+    def __init__(self, reader):
+        self.reader = reader
+        self.shape = reader.shape
+
+    def iter_blocks(self, batch_rows: int):
+        yield from self.reader.iter_blocks(batch_rows)
+
+    def read_rows(self, row_idx: np.ndarray) -> np.ndarray:
+        return self.reader.read_rows(row_idx)
+
+    def close(self) -> None:
+        self.reader.close()
+
+
+def build_legacy_input_context(input_path: str) -> InputContext:
+    sample_paths, sample_ids = load_samples_from_merged_folder(input_path)
+    matrix_key, matrix_path = pick_matrix_path(input_path)
+    source = LegacyNpyMatrixSource(matrix_path, n_samples=len(sample_ids))
+    return InputContext(
+        mode="legacy_npy",
+        store_kind=None,
+        sample_ids=sample_ids,
+        sample_paths=sample_paths,
+        matrix_key=matrix_key,
+        matrix_path=matrix_path,
+        source=source,
+        out_columns={},
+        raw_shape=tuple(source.raw.shape),
+    )
+
+
+def build_cohort_input_context(input_path: str, args) -> InputContext:
+    key = TrackKey(assay=args.assay, haplotype=args.haplotype, strand=args.strand)
+    reader, columns, matrix_ref = load_view_reader(input_path, key)
+    source = ReaderMatrixSource(reader)
+
+    out_columns = {
+        "sample_id": list(columns.get("sample_id", [])),
+        "bundle_path": list(columns.get("bundle_path", [])),
+        "platform": list(columns.get("platform", [])),
+        "source_path": list(columns.get("source_path", [])),
+        "input_tag": list(columns.get("input_tag", [])),
+    }
+    sample_ids = out_columns["sample_id"]
+    sample_paths = out_columns["bundle_path"]
+    if not sample_ids:
+        raise ValueError(f"No columns found for track {key.name()} in cohort store: {input_path}")
+
+    return InputContext(
+        mode="cohort_view",
+        store_kind=detect_store_kind(input_path),
+        sample_ids=sample_ids,
+        sample_paths=sample_paths,
+        matrix_key=key.name(),
+        matrix_path=matrix_ref,
+        source=source,
+        out_columns=out_columns,
+        raw_shape=None,
+    )
+
+
+def load_input_context(input_path: str, args) -> InputContext:
+    try:
+        kind = detect_store_kind(input_path)
+    except Exception:
+        kind = None
+
+    if kind in {"cohort_store_npy", "cohort_store_zarr"}:
+        return build_cohort_input_context(input_path, args)
+    if kind == "sample_store_npy":
+        raise ValueError("mdb pca expects a cohort store (.mmdb) or legacy merged .npy folder, not a sample bundle (.smdb).")
+    return build_legacy_input_context(input_path)
 
 
 # ----------------------------
 # Streaming helpers (fast + simple)
 # ----------------------------
-def choose_rows_by_presence(X, min_frac_present=0.8, batch_rows=200_000) -> np.ndarray:
-    n_cpgs = X.shape[0]
+def choose_rows_by_presence(source, min_frac_present=0.8, batch_rows=200_000) -> np.ndarray:
+    n_cpgs = int(source.shape[0])
+    if float(min_frac_present) <= 0:
+        return np.arange(n_cpgs, dtype=np.int64)
     keep = np.zeros(n_cpgs, dtype=bool)
-    for start in range(0, n_cpgs, batch_rows):
-        rows = slice(start, min(start + batch_rows, n_cpgs))
-        block = np.asarray(X[rows, :], dtype=np.float32)
-        keep[rows] = (np.mean(~np.isnan(block), axis=1) >= min_frac_present)
-    return np.where(keep)[0]
+    cursor = 0
+    for block in source.iter_blocks(batch_rows):
+        n_rows = int(block.shape[0])
+        keep[cursor : cursor + n_rows] = (np.mean(~np.isnan(block), axis=1) >= min_frac_present)
+        cursor += n_rows
+    if cursor != n_cpgs:
+        raise RuntimeError(f"Row scan mismatch: scanned {cursor} rows, expected {n_cpgs}")
+    return np.flatnonzero(keep)
 
 
 def subsample_rows(rows: np.ndarray, frac: float, seed: int) -> np.ndarray:
@@ -127,34 +234,30 @@ def subsample_rows(rows: np.ndarray, frac: float, seed: int) -> np.ndarray:
     return np.sort(rng.choice(rows, size=k, replace=False)).astype(np.int64)
 
 
-def streaming_mean_std(X, row_idx: np.ndarray, batch_rows=200_000):
+def streaming_mean_std(source, row_idx: np.ndarray, batch_rows=200_000):
     """
     Welford per-sample mean/std over selected CpG rows, ignoring NaNs.
     """
-    n_samples = X.shape[1]
+    n_samples = int(source.shape[1])
     count = np.zeros(n_samples, dtype=np.float64)
-    mean = np.zeros(n_samples, dtype=np.float64)
-    M2 = np.zeros(n_samples, dtype=np.float64)
+    sum_vals = np.zeros(n_samples, dtype=np.float64)
+    sum_sq = np.zeros(n_samples, dtype=np.float64)
 
     for start in tqdm(range(0, len(row_idx), batch_rows), desc="mean/std", leave=False):
         rows = row_idx[start : start + batch_rows]
-        block = np.asarray(X[rows, :], dtype=np.float32)
+        block = np.asarray(source.read_rows(rows), dtype=np.float32)
         mask = ~np.isnan(block)
+        safe = np.where(mask, block, 0.0).astype(np.float64, copy=False)
+        count += mask.sum(axis=0)
+        sum_vals += safe.sum(axis=0)
+        sum_sq += (safe * safe).sum(axis=0)
 
-        for r in range(block.shape[0]):
-            m = mask[r]
-            if not np.any(m):
-                continue
-            cols = np.where(m)[0]
-            x = block[r, m].astype(np.float64)
-            count[cols] += 1.0
-            delta = x - mean[cols]
-            mean[cols] += delta / count[cols]
-            M2[cols] += delta * (x - mean[cols])
-
+    mean = np.zeros(n_samples, dtype=np.float64)
     var = np.zeros(n_samples, dtype=np.float64)
     ok = count > 1
-    var[ok] = M2[ok] / (count[ok] - 1.0)
+    mean[ok] = sum_vals[ok] / count[ok]
+    var_num = sum_sq[ok] - (sum_vals[ok] * sum_vals[ok]) / count[ok]
+    var[ok] = np.maximum(var_num / (count[ok] - 1.0), 0.0)
     std = np.sqrt(var)
     std[std == 0] = 1.0
     mean[~ok] = 0.0
@@ -164,7 +267,7 @@ def streaming_mean_std(X, row_idx: np.ndarray, batch_rows=200_000):
 
 
 def fit_ipca_sample_coords(
-    X,
+    source,
     n_components=50,
     frac_cpgs=0.1,
     min_frac_present=0.8,
@@ -173,20 +276,28 @@ def fit_ipca_sample_coords(
     logger=None,
 ):
     """
-    Fit IPCA on X (n_cpgs x n_samples) and return SAMPLE coordinates (dual/loadings coords).
+    Fit IPCA on source (n_cpgs x n_samples) and return SAMPLE coordinates.
     """
-    rows_ok = choose_rows_by_presence(X, min_frac_present=min_frac_present, batch_rows=batch_rows)
-    row_idx = subsample_rows(rows_ok, frac=frac_cpgs, seed=seed)
+    n_rows = int(source.shape[0])
+    if float(min_frac_present) <= 0 and float(frac_cpgs) < 1.0:
+        rng = np.random.default_rng(seed)
+        k = max(int(n_rows * float(frac_cpgs)), 1)
+        row_idx = np.sort(rng.choice(n_rows, size=k, replace=False)).astype(np.int64)
+        eligible_count = n_rows
+    else:
+        rows_ok = choose_rows_by_presence(source, min_frac_present=min_frac_present, batch_rows=batch_rows)
+        row_idx = subsample_rows(rows_ok, frac=frac_cpgs, seed=seed)
+        eligible_count = int(len(rows_ok))
 
     if logger:
-        logger.info(f"Eligible CpGs: {len(rows_ok)}; using for fit: {len(row_idx)} (frac_cpgs={frac_cpgs})")
+        logger.info(f"Eligible CpGs: {eligible_count}; using for fit: {len(row_idx)} (frac_cpgs={frac_cpgs})")
 
-    mean, std, obs_count = streaming_mean_std(X, row_idx, batch_rows=batch_rows)
+    mean, std, obs_count = streaming_mean_std(source, row_idx, batch_rows=batch_rows)
 
     ipca = IncrementalPCA(n_components=n_components)
     for start in tqdm(range(0, len(row_idx), batch_rows), desc="ipca", leave=False):
         rows = row_idx[start : start + batch_rows]
-        block = np.asarray(X[rows, :], dtype=np.float32)
+        block = np.asarray(source.read_rows(rows), dtype=np.float32)
         block = (block - mean[None, :]) / std[None, :]
         np.nan_to_num(block, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
         ipca.partial_fit(block)
@@ -327,11 +438,20 @@ def plotly_png_ok() -> bool:
         return False
 
 
+def write_plotly_image_safe(fig, path: str, logger: logging.Logger) -> bool:
+    try:
+        fig.write_image(path)
+        return True
+    except Exception as exc:
+        logger.warning(f"Skipping plotly PNG export for {path}: {exc}")
+        return False
+
+
 # ----------------------------
 # MAIN entry (submodule)
 # ----------------------------
 def pca_main(args):
-    merged_dir = args.input
+    input_path = args.input
     outdir = args.outdir
     os.makedirs(outdir, exist_ok=True)
     logger = setup_logging(outdir, args.verbose)
@@ -339,102 +459,110 @@ def pca_main(args):
     t0 = time.time()
     logger.info("==== Run started ====")
     logger.info(f"Start time: {datetime.now().isoformat(timespec='seconds')}")
-    logger.info(f"Input merged folder: {merged_dir}")
+    logger.info(f"Input: {input_path}")
 
     png_ok = plotly_png_ok()
     logger.info(f"Plotly PNG export: {'available' if png_ok else 'NOT available (HTML only)'}")
 
-    sample_paths, sample_ids = load_samples_from_merged_folder(merged_dir)
-    key, matrix_path = pick_matrix_path(merged_dir)
-    logger.info(f"Samples: {len(sample_ids)} | matrix={key} | {matrix_path}")
-
-    X_raw, X = load_mmap_matrix_oriented(matrix_path, n_samples=len(sample_ids))
-    logger.info(f"Matrix shape used: {X.shape} (n_cpgs x n_samples)")
-
-    sample_coords, ipca, row_idx, obs_count = fit_ipca_sample_coords(
-        X,
-        n_components=args.n_pcs,
-        frac_cpgs=args.frac_cpgs,
-        min_frac_present=args.min_frac_present,
-        batch_rows=args.batch_rows,
-        seed=args.seed,
-        logger=logger,
+    ctx = load_input_context(input_path, args)
+    logger.info(
+        f"Input mode: {ctx.mode} | samples={len(ctx.sample_ids)} "
+        f"| matrix={ctx.matrix_key} | ref={ctx.matrix_path}"
     )
+    logger.info(f"Matrix shape used: {ctx.source.shape} (n_cpgs x n_samples)")
 
-    out = pd.DataFrame({"id": sample_ids, "path": sample_paths})
-    out["matrix_key"] = key
-    out["matrix_path"] = matrix_path
-    out["n_obs_cpgs_for_fit"] = obs_count
-    for i in range(args.n_pcs):
-        out[f"PC{i+1}"] = sample_coords[:, i]
-
-    did_umap = False
-    if bool(getattr(args, "umap", False)):
-        reducer = umap.UMAP(
-            n_neighbors=args.umap_neighbors,
-            min_dist=args.umap_min_dist,
-            metric=args.umap_metric,
-            random_state=args.seed,
+    try:
+        sample_coords, ipca, row_idx, obs_count = fit_ipca_sample_coords(
+            ctx.source,
+            n_components=args.n_pcs,
+            frac_cpgs=args.frac_cpgs,
+            min_frac_present=args.min_frac_present,
+            batch_rows=args.batch_rows,
+            seed=args.seed,
+            logger=logger,
         )
-        emb = reducer.fit_transform(sample_coords).astype(np.float32)
-        out["UMAP1"] = emb[:, 0]
-        out["UMAP2"] = emb[:, 1]
-        did_umap = True
 
-    out, meta = maybe_merge_metadata(out, getattr(args, "metadata", None), logger=logger)
+        out = pd.DataFrame({"id": ctx.sample_ids, "path": ctx.sample_paths})
+        for col_name, values in ctx.out_columns.items():
+            if values and len(values) == len(out):
+                out[col_name] = values
+        out["matrix_key"] = ctx.matrix_key
+        out["matrix_path"] = ctx.matrix_path
+        out["n_obs_cpgs_for_fit"] = obs_count
+        for i in range(args.n_pcs):
+            out[f"PC{i+1}"] = sample_coords[:, i]
 
-    out_tsv = os.path.join(outdir, "embedding.tsv")
-    out.to_csv(out_tsv, sep="\t", index=False)
+        did_umap = False
+        if bool(getattr(args, "umap", False)):
+            reducer = umap.UMAP(
+                n_neighbors=args.umap_neighbors,
+                min_dist=args.umap_min_dist,
+                metric=args.umap_metric,
+                random_state=args.seed,
+            )
+            emb = reducer.fit_transform(sample_coords).astype(np.float32)
+            out["UMAP1"] = emb[:, 0]
+            out["UMAP2"] = emb[:, 1]
+            did_umap = True
 
-    params = vars(args).copy()
-    params.update(
-        dict(
-            input=merged_dir,
-            selected_matrix_key=key,
-            selected_matrix_path=matrix_path,
-            npy_shape=tuple(X_raw.shape),
-            used_shape=tuple(X.shape),
-            n_samples=int(len(sample_ids)),
-            n_cpgs_used_for_fit=int(len(row_idx)),
-            pca_semantics="IPCA on (n_cpgs x n_samples); PCs are SAMPLE coords (dual/loadings)",
-            explained_variance_ratio=getattr(ipca, "explained_variance_ratio_", None).tolist()
-            if getattr(ipca, "explained_variance_ratio_", None) is not None
-            else None,
-            umap_ran=bool(did_umap),
-            plotly_png_supported=bool(png_ok),
+        out, meta = maybe_merge_metadata(out, getattr(args, "metadata", None), logger=logger)
+
+        out_tsv = os.path.join(outdir, "embedding.tsv")
+        out.to_csv(out_tsv, sep="\t", index=False)
+
+        params = vars(args).copy()
+        params.update(
+            dict(
+                input=input_path,
+                input_mode=ctx.mode,
+                input_store_kind=ctx.store_kind,
+                selected_matrix_key=ctx.matrix_key,
+                selected_matrix_path=ctx.matrix_path,
+                used_shape=tuple(ctx.source.shape),
+                raw_shape=ctx.raw_shape,
+                n_samples=int(len(ctx.sample_ids)),
+                n_cpgs_used_for_fit=int(len(row_idx)),
+                pca_semantics="IPCA on (n_cpgs x n_samples); PCs are sample coordinates",
+                explained_variance_ratio=getattr(ipca, "explained_variance_ratio_", None).tolist()
+                if getattr(ipca, "explained_variance_ratio_", None) is not None
+                else None,
+                umap_ran=bool(did_umap),
+                plotly_png_supported=bool(png_ok),
+            )
         )
-    )
-    with open(os.path.join(outdir, "params.json"), "w") as f:
-        json.dump(params, f, indent=2)
+        with open(os.path.join(outdir, "params.json"), "w") as f:
+            json.dump(params, f, indent=2)
 
-    color_cols, hover_cols = plotly_color_options(meta, out, args.n_pcs, did_umap)
+        color_cols, hover_cols = plotly_color_options(meta, out, args.n_pcs, did_umap)
 
-    pca_fig = make_dropdown_scatter(out, "PC1", "PC2", color_cols, hover_cols, f"PCA sample coords (PC1 vs PC2) [{key}]")
-    pca_html = os.path.join(outdir, "pca.html")
-    pca_fig.write_html(pca_html, include_plotlyjs="cdn")
-    if png_ok:
-        pca_fig.write_image(os.path.join(outdir, "pca.png"))
-
-    if did_umap:
-        umap_fig = make_dropdown_scatter(out, "UMAP1", "UMAP2", color_cols, hover_cols, f"UMAP (on PCA coords) [{key}]")
-        umap_html = os.path.join(outdir, "umap.html")
-        umap_fig.write_html(umap_html, include_plotlyjs="cdn")
+        pca_fig = make_dropdown_scatter(out, "PC1", "PC2", color_cols, hover_cols, f"PCA sample coords (PC1 vs PC2) [{ctx.matrix_key}]")
+        pca_html = os.path.join(outdir, "pca.html")
+        pca_fig.write_html(pca_html, include_plotlyjs="cdn")
         if png_ok:
-            umap_fig.write_image(os.path.join(outdir, "umap.png"))
+            write_plotly_image_safe(pca_fig, os.path.join(outdir, "pca.png"), logger)
 
-    # Pairplot
-    n_pair = args.pairplot_pcs_n
-    pcs = tuple(f"PC{i}" for i in range(1, n_pair + 1))
-    hue = pick_pairplot_hue(out, meta, args)
-    manifest_for_pairplot = out.drop(columns=[f"PC{i+1}" for i in range(args.n_pcs)], errors="ignore")
-    write_pairplot_png(
-        scores=sample_coords,
-        manifest=manifest_for_pairplot,
-        out_png=os.path.join(outdir, "pca_pairplot.png"),
-        pcs=pcs,
-        hue=hue,
-        diag_kind=getattr(args, "pairplot_diag_kind", "kde"),
-        corner=bool(getattr(args, "pairplot_corner", False)),
-    )
+        if did_umap:
+            umap_fig = make_dropdown_scatter(out, "UMAP1", "UMAP2", color_cols, hover_cols, f"UMAP (on PCA coords) [{ctx.matrix_key}]")
+            umap_html = os.path.join(outdir, "umap.html")
+            umap_fig.write_html(umap_html, include_plotlyjs="cdn")
+            if png_ok:
+                write_plotly_image_safe(umap_fig, os.path.join(outdir, "umap.png"), logger)
+
+        # Pairplot
+        n_pair = args.pairplot_pcs_n
+        pcs = tuple(f"PC{i}" for i in range(1, n_pair + 1))
+        hue = pick_pairplot_hue(out, meta, args)
+        manifest_for_pairplot = out.drop(columns=[f"PC{i+1}" for i in range(args.n_pcs)], errors="ignore")
+        write_pairplot_png(
+            scores=sample_coords,
+            manifest=manifest_for_pairplot,
+            out_png=os.path.join(outdir, "pca_pairplot.png"),
+            pcs=pcs,
+            hue=hue,
+            diag_kind=getattr(args, "pairplot_diag_kind", "kde"),
+            corner=bool(getattr(args, "pairplot_corner", False)),
+        )
+    finally:
+        ctx.source.close()
 
     logger.info(f"==== Done in {time.time() - t0:.2f}s ====")

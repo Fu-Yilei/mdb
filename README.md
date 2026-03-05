@@ -138,11 +138,24 @@ mdb query \
   --region chr1:10469-12000
 ```
 
+### 6) Run PCA on cohort view
+
+```bash
+mdb pca \
+  -i cohort.mmdb \
+  -o cohort_pca \
+  --assay 5mC \
+  --haplotype combined \
+  --strand combined \
+  --n_pcs 10 \
+  --frac_cpgs 0.1
+```
+
 ## Important Notes
 
 - `create --reader` currently defaults to `scan` and the active create path uses scan-based reading.
 - `merge` and `append` require sample bundles created by current `mdb create` (manifest-based `.smdb` layout).
-- `pca` is a legacy command path that expects flat merged `.npy` matrix layout, not the current view-based cohort store.
+- `pca` now supports both current cohort stores (`.mmdb`) and legacy flat merged `.npy` folders.
 
 ## License
 

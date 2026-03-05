@@ -80,8 +80,13 @@ def parse_args(argv):
     )
     append_parser.add_argument("--zarr-codec-threads", type=int, default=4, help="Codec threads for zarr backend, default=4")
 
-    pca_parser = subparsers.add_parser("pca", help="Legacy PCA on flat merged .npy folder")
-    pca_parser.add_argument("-i", "--input", required=True, help="Input legacy merged folder with columns.tsv/txt and *.npy")
+    pca_parser = subparsers.add_parser("pca", help="PCA on cohort store view or legacy flat merged .npy folder")
+    pca_parser.add_argument(
+        "-i",
+        "--input",
+        required=True,
+        help="Input cohort store (.mmdb) or legacy merged folder with columns.tsv/txt and *.npy",
+    )
     pca_parser.add_argument("-o", "--outdir", required=True, help="Output directory for PCA results")
     pca_parser.add_argument("-m", "--metadata", help="Metadata TSV/CSV with sample_id or id column")
     pca_parser.add_argument("--assay", default="5mC", help="Track assay to analyze, default=5mC")
@@ -97,6 +102,14 @@ def parse_args(argv):
     pca_parser.add_argument("--umap_neighbors", type=int, default=15, help="UMAP number of neighbors, default=15")
     pca_parser.add_argument("--umap_min_dist", type=float, default=0.1, help="UMAP minimum distance, default=0.1")
     pca_parser.add_argument("--umap_metric", type=str, default="euclidean", help="UMAP metric, default=euclidean")
+    pca_parser.add_argument(
+        "--pairplot-mode",
+        choices=("metadata", "sample", "none"),
+        help="Pairplot coloring mode: metadata, sample, or none; default auto",
+    )
+    pca_parser.add_argument("--pairplot-hue", help="Preferred metadata column for pairplot hue when --pairplot-mode metadata")
+    pca_parser.add_argument("--pairplot_diag_kind", choices=("kde", "hist"), default="kde", help="Pairplot diagonal kind, default=kde")
+    pca_parser.add_argument("--pairplot_corner", action="store_true", help="Use lower triangle only for pairplot")
     pca_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
 
     query_parser = subparsers.add_parser("query", help="Query a sample bundle or cohort store at one CpG locus")
