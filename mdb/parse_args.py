@@ -30,8 +30,8 @@ def parse_args(argv):
     create_parser.add_argument(
         "--reader",
         choices=("auto", "scan", "tabix"),
-        default="auto",
-        help="BED reader implementation, default=auto (currently prefers scan for whole-file ingest)",
+        default="scan",
+        help="BED reader implementation, default=scan",
     )
     create_parser.add_argument(
         "-w",
