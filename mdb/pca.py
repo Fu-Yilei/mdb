@@ -19,6 +19,7 @@ import sys
 import json
 import time
 import glob
+import math
 import logging
 from datetime import datetime
 from dataclasses import dataclass
@@ -698,7 +699,17 @@ def make_dropdown_scatter(
     return master
 
 
-def write_pairplot_png(scores: np.ndarray, manifest: pd.DataFrame, out_png: str, pcs: tuple[str, ...], hue: str | None = None, diag_kind="kde", corner=False):
+def write_pairplot_png(
+    scores: np.ndarray,
+    manifest: pd.DataFrame,
+    out_png: str,
+    pcs: tuple[str, ...],
+    hue: str | None = None,
+    diag_kind="kde",
+    corner=False,
+    pc_label_map: dict[str, str] | None = None,
+    title: str | None = None,
+):
     # Build a clean df: (manifest without PC*) + (PCs from scores)
     scores = np.asarray(scores)
     pc_cols_all = [f"PC{i+1}" for i in range(scores.shape[1])]
@@ -710,12 +721,97 @@ def write_pairplot_png(scores: np.ndarray, manifest: pd.DataFrame, out_png: str,
     df_plot = pca_df[cols].copy()
     for pc in pcs:
         df_plot[pc] = pd.to_numeric(df_plot[pc], errors="coerce")
-    if hue:
-        df_plot[hue] = df_plot[hue].astype(str)
+    vars_plot = list(pcs)
+    if pc_label_map:
+        rename_map = {pc: pc_label_map.get(pc, pc) for pc in pcs}
+        df_plot = df_plot.rename(columns=rename_map)
+        vars_plot = [rename_map[pc] for pc in pcs]
 
-    g = sns.pairplot(df_plot, vars=list(pcs), hue=hue, diag_kind=diag_kind, corner=corner, plot_kws=dict(s=10, alpha=0.9, linewidth=0))
+    hue_palette = None
+    hue_order: list[str] = []
+    if hue:
+        hue_vals = df_plot[hue].astype(str).fillna("NA")
+        hue_order = sorted(hue_vals.unique().tolist())
+        df_plot[hue] = pd.Categorical(hue_vals, categories=hue_order, ordered=True)
+        palette = sns.color_palette("tab20", n_colors=max(len(hue_order), 3))
+        hue_palette = {cat: palette[i % len(palette)] for i, cat in enumerate(hue_order)}
+
+    sns.set_theme(style="whitegrid", context="notebook")
+    plot_kws = dict(s=16, alpha=0.72, linewidth=0.25, edgecolor="white")
+    diag_kws = dict(bins=30, edgecolor="white", linewidth=0.4) if diag_kind == "hist" else {}
+    g = sns.pairplot(
+        df_plot,
+        vars=vars_plot,
+        hue=hue,
+        palette=hue_palette,
+        diag_kind=diag_kind,
+        corner=corner,
+        plot_kws=plot_kws,
+        diag_kws=diag_kws,
+    )
+    side = max(8.5, 2.35 * len(vars_plot))
+    g.fig.set_size_inches(side, side)
+    for ax in g.fig.axes:
+        if ax is None:
+            continue
+        ax.grid(True, color="#d9dee4", linewidth=0.7)
+        ax.tick_params(labelsize=9)
+    legend_obj = getattr(g, "_legend", None)
+    legend_below = False
+    legend_rows = 1
+    if legend_obj is not None:
+        n_levels = len(hue_order)
+        legend_title = hue if hue else ""
+        if n_levels > 12:
+            legend_below = True
+            ncol = min(6, max(3, math.ceil(n_levels / 5)))
+            legend_rows = max(1, math.ceil(n_levels / ncol))
+            try:
+                sns.move_legend(
+                    g,
+                    "lower center",
+                    bbox_to_anchor=(0.5, -0.03),
+                    ncol=ncol,
+                    frameon=False,
+                    title=legend_title,
+                )
+            except Exception:
+                legend_obj.set_bbox_to_anchor((0.5, -0.03))
+                legend_obj._loc = 9  # upper center
+                legend_obj.set_title(legend_title)
+                legend_obj.set_frame_on(False)
+                if hasattr(legend_obj, "set_ncols"):
+                    legend_obj.set_ncols(ncol)
+                else:
+                    legend_obj._ncols = ncol
+        else:
+            try:
+                sns.move_legend(
+                    g,
+                    "upper left",
+                    bbox_to_anchor=(1.01, 0.99),
+                    frameon=False,
+                    title=legend_title,
+                )
+            except Exception:
+                legend_obj.set_bbox_to_anchor((1.01, 0.99))
+                legend_obj._loc = 2  # upper left
+                legend_obj.set_title(legend_title)
+                legend_obj.set_frame_on(False)
+        legend_obj = getattr(g, "_legend", None)
+        if legend_obj is not None:
+            for txt in legend_obj.texts:
+                txt.set_fontsize(8)
+            if legend_obj.get_title() is not None:
+                legend_obj.get_title().set_fontsize(9)
+    if title:
+        g.fig.suptitle(title, y=1.0, fontsize=12)
+    if legend_below:
+        bottom_pad = min(0.34, 0.05 + 0.032 * legend_rows)
+        g.fig.tight_layout(rect=(0.0, bottom_pad, 1.0, 0.95))
+    else:
+        g.fig.tight_layout(rect=(0.0, 0.0, 0.84, 0.95))
     os.makedirs(os.path.dirname(out_png) or ".", exist_ok=True)
-    g.fig.tight_layout()
     g.fig.savefig(out_png, dpi=200, bbox_inches="tight")
     plt.close(g.fig)
 
@@ -898,6 +994,7 @@ def write_outlier_artifacts(
     matrix_key: str,
     x_axis_label: str,
     y_axis_label: str,
+    pairplot_pc_label_map: dict[str, str] | None,
     logger: logging.Logger,
     png_ok: bool,
 ) -> None:
@@ -975,6 +1072,8 @@ def write_outlier_artifacts(
             hue=hue2,
             diag_kind=getattr(args, "pairplot_diag_kind", "kde"),
             corner=bool(getattr(args, "pairplot_corner", False)),
+            pc_label_map=pairplot_pc_label_map,
+            title=f"PCA Pairplot [{matrix_key}] (outliers removed)",
         )
     else:
         logger.warning("Skipping pca_pairplot_no_outliers.png: fewer than 2 inlier samples")
@@ -1087,6 +1186,13 @@ def pca_main(args):
         else:
             x_axis_label = "PC1"
             y_axis_label = "PC2"
+        pairplot_pc_label_map: dict[str, str] = {}
+        for i in range(int(args.pairplot_pcs_n)):
+            pc = f"PC{i+1}"
+            if evr is not None and i < len(evr):
+                pairplot_pc_label_map[pc] = f"{pc} ({float(evr[i]) * 100.0:.2f}%)"
+            else:
+                pairplot_pc_label_map[pc] = pc
 
         write_scatter_with_styles(
             df=out,
@@ -1136,6 +1242,8 @@ def pca_main(args):
             hue=hue,
             diag_kind=getattr(args, "pairplot_diag_kind", "kde"),
             corner=bool(getattr(args, "pairplot_corner", False)),
+            pc_label_map=pairplot_pc_label_map,
+            title=f"PCA Pairplot [{ctx.matrix_key}]",
         )
 
         if outlier_enabled:
@@ -1151,6 +1259,7 @@ def pca_main(args):
                 matrix_key=ctx.matrix_key,
                 x_axis_label=x_axis_label,
                 y_axis_label=y_axis_label,
+                pairplot_pc_label_map=pairplot_pc_label_map,
                 logger=logger,
                 png_ok=png_ok,
             )
