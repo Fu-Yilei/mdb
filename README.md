@@ -1,5 +1,9 @@
 # mdb
 
+[![PyPI version](https://img.shields.io/pypi/v/methdb?logo=pypi&logoColor=white)](https://pypi.org/project/methdb/)
+[![Python versions](https://img.shields.io/pypi/pyversions/methdb?logo=python&logoColor=white)](https://pypi.org/project/methdb/)
+[![License](https://img.shields.io/github/license/Fu-Yilei/mdb)](LICENSE)
+
 `mdb` builds and queries CpG-by-sample methylation matrices from ONT and PacBio BED inputs.
 
 - PyPI package: `methdb`
