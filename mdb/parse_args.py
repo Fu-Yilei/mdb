@@ -127,6 +127,17 @@ def parse_args(argv):
         default=10,
         help="Number of leading PCs used for outlier detection, default=10",
     )
+    pca_parser.add_argument(
+        "--plot_style",
+        choices=("studio", "sunrise", "paper"),
+        default="studio",
+        help="Plot style preset for PCA/UMAP HTML, default=studio",
+    )
+    pca_parser.add_argument(
+        "--plot_style_variants",
+        action="store_true",
+        help="Write additional style-variant HTML files for visual comparison",
+    )
     pca_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
 
     query_parser = subparsers.add_parser("query", help="Query a sample bundle or cohort store at one CpG locus")

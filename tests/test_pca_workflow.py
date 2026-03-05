@@ -70,6 +70,8 @@ def run_pca(input_path: Path, outdir: Path, **overrides) -> None:
         outlier_detect=False,
         outlier_alpha=0.999,
         outlier_n_pcs=10,
+        plot_style="studio",
+        plot_style_variants=False,
         verbose=False,
     )
     args.update(overrides)
@@ -175,3 +177,26 @@ def test_pca_outlier_artifacts(tmp_path: Path):
     df = pd.read_csv(outdir / "embedding.tsv", sep="\t")
     assert "is_outlier" in df.columns
     assert "mahalanobis_pc" in df.columns
+
+
+def test_pca_plot_style_variants(tmp_path: Path):
+    legacy = tmp_path / "legacy_styles"
+    legacy.mkdir()
+    (legacy / "columns.txt").write_text("/synthetic/s1.smdb\n/synthetic/s2.smdb\n/synthetic/s3.smdb\n")
+    arr = np.asarray(
+        [
+            [0.10, 0.11, 0.95],
+            [0.12, 0.13, 0.96],
+            [0.18, 0.17, 0.94],
+            [0.20, 0.22, 0.98],
+        ],
+        dtype=np.float32,
+    )
+    np.save(legacy / "5mC.npy", arr)
+
+    outdir = tmp_path / "pca_styles"
+    run_pca(legacy, outdir, plot_style="sunrise", plot_style_variants=True)
+
+    assert (outdir / "pca.html").exists()
+    assert (outdir / "pca_studio.html").exists()
+    assert (outdir / "pca_paper.html").exists()

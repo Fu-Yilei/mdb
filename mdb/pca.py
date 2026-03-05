@@ -40,6 +40,88 @@ from mdb.schema import TrackKey
 from mdb.storage import detect_store_kind, load_view_reader
 
 
+PLOT_STYLE_PRESETS: dict[str, dict[str, object]] = {
+    "studio": {
+        "paper_bg": "#f5f8fc",
+        "plot_bg": "#ffffff",
+        "font_color": "#0f2f4f",
+        "grid": "#d7e2ee",
+        "axis": "#8ea2b6",
+        "menu_bg": "#ffffff",
+        "menu_border": "#b8c6d6",
+        "marker_line": "#ffffff",
+        "marker_size": 10,
+        "marker_opacity": 0.86,
+        "accent_a": "rgba(27, 164, 176, 0.14)",
+        "accent_b": "rgba(244, 133, 42, 0.10)",
+        "colorway": [
+            "#1f77b4",
+            "#17a398",
+            "#f28e2b",
+            "#e15759",
+            "#59a14f",
+            "#edc949",
+            "#4e79a7",
+            "#76b7b2",
+            "#ff9d52",
+            "#9c755f",
+        ],
+    },
+    "sunrise": {
+        "paper_bg": "#fff8f1",
+        "plot_bg": "#fffdf8",
+        "font_color": "#4b2a1f",
+        "grid": "#f0ddcc",
+        "axis": "#c09c7f",
+        "menu_bg": "#fffdf8",
+        "menu_border": "#dfc0a6",
+        "marker_line": "#fff8f1",
+        "marker_size": 10,
+        "marker_opacity": 0.84,
+        "accent_a": "rgba(255, 167, 38, 0.16)",
+        "accent_b": "rgba(0, 148, 136, 0.10)",
+        "colorway": [
+            "#e76f51",
+            "#2a9d8f",
+            "#f4a261",
+            "#264653",
+            "#8ab17d",
+            "#e9c46a",
+            "#4c956c",
+            "#f08a5d",
+            "#3d5a80",
+            "#bc6c25",
+        ],
+    },
+    "paper": {
+        "paper_bg": "#fcfcfb",
+        "plot_bg": "#ffffff",
+        "font_color": "#222222",
+        "grid": "#e1e3e5",
+        "axis": "#a7adb3",
+        "menu_bg": "#ffffff",
+        "menu_border": "#c7ccd1",
+        "marker_line": "#ffffff",
+        "marker_size": 9,
+        "marker_opacity": 0.82,
+        "accent_a": "rgba(52, 152, 219, 0.10)",
+        "accent_b": "rgba(39, 174, 96, 0.08)",
+        "colorway": [
+            "#1b6ca8",
+            "#1f9d8a",
+            "#e67e22",
+            "#c0392b",
+            "#2e7d32",
+            "#c8a200",
+            "#5d6d7e",
+            "#2f855a",
+            "#d35400",
+            "#8d6e63",
+        ],
+    },
+}
+
+
 @dataclass
 class InputContext:
     mode: str
@@ -434,6 +516,116 @@ def build_color_styles(df: pd.DataFrame, color_cols: list[str]) -> dict[str, dic
     return styles
 
 
+def resolve_plot_styles(args) -> list[str]:
+    primary = str(getattr(args, "plot_style", "studio"))
+    if primary not in PLOT_STYLE_PRESETS:
+        primary = "studio"
+    styles = [primary]
+    if bool(getattr(args, "plot_style_variants", False)):
+        for name in PLOT_STYLE_PRESETS:
+            if name != primary:
+                styles.append(name)
+    return styles
+
+
+def apply_style_to_figure(fig: go.Figure, style_name: str, with_dropdown: bool) -> None:
+    style = PLOT_STYLE_PRESETS.get(style_name, PLOT_STYLE_PRESETS["studio"])
+    right_margin = 280 if with_dropdown else 85
+    fig.update_layout(
+        template="none",
+        width=1120,
+        height=860,
+        paper_bgcolor=style["paper_bg"],
+        plot_bgcolor=style["plot_bg"],
+        colorway=style["colorway"],
+        font=dict(family="Avenir Next, Source Sans Pro, Helvetica Neue, sans-serif", size=14, color=style["font_color"]),
+        title=dict(x=0.01, y=0.98, xanchor="left", yanchor="top", font=dict(size=22, color=style["font_color"])),
+        margin=dict(l=72, r=right_margin, t=92, b=70),
+        legend=dict(
+            bgcolor="rgba(255,255,255,0.82)",
+            bordercolor=style["menu_border"],
+            borderwidth=1,
+            x=1.02,
+            xanchor="left",
+            y=1.0,
+            yanchor="top",
+            font=dict(size=11, color=style["font_color"]),
+        ),
+        hoverlabel=dict(
+            bgcolor="rgba(255,255,255,0.97)",
+            bordercolor=style["menu_border"],
+            font=dict(size=12, color=style["font_color"]),
+        ),
+    )
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor=style["grid"],
+        gridwidth=1,
+        zeroline=False,
+        showline=True,
+        linecolor=style["axis"],
+        linewidth=1.2,
+        ticks="outside",
+        tickcolor=style["axis"],
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor=style["grid"],
+        gridwidth=1,
+        zeroline=False,
+        showline=True,
+        linecolor=style["axis"],
+        linewidth=1.2,
+        ticks="outside",
+        tickcolor=style["axis"],
+    )
+    fig.update_traces(
+        selector=dict(type="scatter"),
+        marker=dict(
+            size=style["marker_size"],
+            opacity=style["marker_opacity"],
+            line=dict(color=style["marker_line"], width=0.7),
+        ),
+    )
+    if fig.layout.updatemenus:
+        styled_menus = []
+        for menu in fig.layout.updatemenus:
+            menu2 = menu.to_plotly_json()
+            menu2["bgcolor"] = style["menu_bg"]
+            menu2["bordercolor"] = style["menu_border"]
+            menu2["borderwidth"] = 1
+            menu2["font"] = dict(size=12, color=style["font_color"])
+            menu2["pad"] = dict(l=6, r=6, t=6, b=6)
+            styled_menus.append(menu2)
+        fig.update_layout(updatemenus=styled_menus)
+
+    # Soft backdrop accents so the chart is less visually flat.
+    fig.add_shape(
+        type="circle",
+        xref="paper",
+        yref="paper",
+        x0=-0.10,
+        x1=0.23,
+        y0=0.78,
+        y1=1.10,
+        fillcolor=style["accent_a"],
+        line=dict(width=0),
+        layer="below",
+    )
+    fig.add_shape(
+        type="circle",
+        xref="paper",
+        yref="paper",
+        x0=0.82,
+        x1=1.16,
+        y0=-0.16,
+        y1=0.18,
+        fillcolor=style["accent_b"],
+        line=dict(width=0),
+        layer="below",
+    )
+
+
 def make_dropdown_scatter(
     df,
     x,
@@ -444,6 +636,7 @@ def make_dropdown_scatter(
     color_styles: dict[str, dict[str, object]] | None = None,
     symbol_col: str | None = None,
     symbol_map: dict[str, str] | None = None,
+    style_name: str = "studio",
 ):
     scatter_kwargs: dict[str, object] = {}
     if symbol_col and symbol_col in df.columns:
@@ -453,7 +646,7 @@ def make_dropdown_scatter(
 
     if not color_cols:
         fig = px.scatter(df, x=x, y=y, hover_data=hover_cols, title=title, **scatter_kwargs)
-        fig.update_layout(template="plotly_white", width=1000, height=800, margin=dict(l=60, r=60, t=80, b=60))
+        apply_style_to_figure(fig, style_name=style_name, with_dropdown=False)
         return fig
 
     master = go.Figure()
@@ -487,7 +680,7 @@ def make_dropdown_scatter(
 
     if not groups:
         fig = px.scatter(df, x=x, y=y, hover_data=hover_cols, title=title, **scatter_kwargs)
-        fig.update_layout(template="plotly_white", width=1000, height=800, margin=dict(l=60, r=60, t=80, b=60))
+        apply_style_to_figure(fig, style_name=style_name, with_dropdown=False)
         return fig
 
     buttons = []
@@ -498,13 +691,8 @@ def make_dropdown_scatter(
             vis[j] = True
         buttons.append(dict(label=col, method="update", args=[{"visible": vis}, {"title": f"{title} (color_by={col})"}]))
 
-    master.update_layout(
-        updatemenus=[dict(buttons=buttons, direction="down", showactive=True, x=1.02, xanchor="left", y=1.0, yanchor="top")],
-        template="plotly_white",
-        width=1000,
-        height=800,
-        margin=dict(l=60, r=240, t=80, b=60),
-    )
+    master.update_layout(updatemenus=[dict(buttons=buttons, direction="down", showactive=True, x=1.02, xanchor="left", y=1.0, yanchor="top")])
+    apply_style_to_figure(master, style_name=style_name, with_dropdown=True)
     return master
 
 
@@ -566,6 +754,44 @@ def write_plotly_image_safe(fig, path: str, logger: logging.Logger) -> bool:
     except Exception as exc:
         logger.warning(f"Skipping plotly PNG export for {path}: {exc}")
         return False
+
+
+def write_scatter_with_styles(
+    *,
+    df: pd.DataFrame,
+    x: str,
+    y: str,
+    color_cols: list[str],
+    hover_cols: list[str],
+    title: str,
+    color_styles: dict[str, dict[str, object]],
+    out_html: str,
+    args,
+    logger: logging.Logger,
+    png_ok: bool = False,
+    out_png: str | None = None,
+    symbol_col: str | None = None,
+    symbol_map: dict[str, str] | None = None,
+) -> None:
+    styles = resolve_plot_styles(args)
+    html_root, html_ext = os.path.splitext(out_html)
+    for idx, style_name in enumerate(styles):
+        fig = make_dropdown_scatter(
+            df=df,
+            x=x,
+            y=y,
+            color_cols=color_cols,
+            hover_cols=hover_cols,
+            title=title,
+            color_styles=color_styles,
+            symbol_col=symbol_col,
+            symbol_map=symbol_map,
+            style_name=style_name,
+        )
+        html_path = out_html if idx == 0 else f"{html_root}_{style_name}{html_ext}"
+        fig.write_html(html_path, include_plotlyjs="cdn")
+        if idx == 0 and png_ok and out_png:
+            write_plotly_image_safe(fig, out_png, logger)
 
 
 def detect_outliers_mahalanobis(
@@ -686,21 +912,22 @@ def write_outlier_artifacts(
         "ordered": ["inlier", "outlier"],
         "cmap": {"inlier": "#94a3b8", "outlier": "#dc2626"},
     }
-    fig_marked = make_dropdown_scatter(
-        out,
-        "PC1",
-        "PC2",
-        marked_color,
-        marked_hover,
-        f"PCA sample coords (PC1 vs PC2) [{matrix_key}] with outliers marked",
+    write_scatter_with_styles(
+        df=out,
+        x="PC1",
+        y="PC2",
+        color_cols=marked_color,
+        hover_cols=marked_hover,
+        title=f"PCA sample coords (PC1 vs PC2) [{matrix_key}] with outliers marked",
         color_styles=marked_styles,
+        out_html=os.path.join(outdir, "pca_with_outliers_marked.html"),
+        args=args,
+        logger=logger,
+        png_ok=png_ok,
+        out_png=os.path.join(outdir, "pca_with_outliers_marked.png"),
         symbol_col="outlier_status",
         symbol_map={"inlier": "circle", "outlier": "x"},
     )
-    marked_html = os.path.join(outdir, "pca_with_outliers_marked.html")
-    fig_marked.write_html(marked_html, include_plotlyjs="cdn")
-    if png_ok:
-        write_plotly_image_safe(fig_marked, os.path.join(outdir, "pca_with_outliers_marked.png"), logger)
 
     inlier_mask = ~out["is_outlier"].to_numpy(dtype=bool)
     inlier_df = out.loc[inlier_mask].copy()
@@ -708,19 +935,20 @@ def write_outlier_artifacts(
         logger.warning("Skipping no-outlier plots: no inlier samples")
         return
     inlier_color = [c for c in color_cols if c in inlier_df.columns]
-    fig_inlier = make_dropdown_scatter(
-        inlier_df,
-        "PC1",
-        "PC2",
-        inlier_color,
-        hover_cols,
-        f"PCA sample coords (PC1 vs PC2) [{matrix_key}] no outliers",
+    write_scatter_with_styles(
+        df=inlier_df,
+        x="PC1",
+        y="PC2",
+        color_cols=inlier_color,
+        hover_cols=hover_cols,
+        title=f"PCA sample coords (PC1 vs PC2) [{matrix_key}] no outliers",
         color_styles=color_styles,
+        out_html=os.path.join(outdir, "pca_no_outliers.html"),
+        args=args,
+        logger=logger,
+        png_ok=png_ok,
+        out_png=os.path.join(outdir, "pca_no_outliers.png"),
     )
-    inlier_html = os.path.join(outdir, "pca_no_outliers.html")
-    fig_inlier.write_html(inlier_html, include_plotlyjs="cdn")
-    if png_ok:
-        write_plotly_image_safe(fig_inlier, os.path.join(outdir, "pca_no_outliers.png"), logger)
 
     n_pair = max(1, min(int(args.pairplot_pcs_n), int(sample_coords.shape[1])))
     pcs = tuple(f"PC{i}" for i in range(1, n_pair + 1))
@@ -841,34 +1069,36 @@ def pca_main(args):
         color_cols, hover_cols = plotly_color_options(meta, out, args.n_pcs, did_umap)
         color_styles = build_color_styles(out, color_cols)
 
-        pca_fig = make_dropdown_scatter(
-            out,
-            "PC1",
-            "PC2",
-            color_cols,
-            hover_cols,
-            f"PCA sample coords (PC1 vs PC2) [{ctx.matrix_key}]",
+        write_scatter_with_styles(
+            df=out,
+            x="PC1",
+            y="PC2",
+            color_cols=color_cols,
+            hover_cols=hover_cols,
+            title=f"PCA sample coords (PC1 vs PC2) [{ctx.matrix_key}]",
             color_styles=color_styles,
+            out_html=os.path.join(outdir, "pca.html"),
+            args=args,
+            logger=logger,
+            png_ok=png_ok,
+            out_png=os.path.join(outdir, "pca.png"),
         )
-        pca_html = os.path.join(outdir, "pca.html")
-        pca_fig.write_html(pca_html, include_plotlyjs="cdn")
-        if png_ok:
-            write_plotly_image_safe(pca_fig, os.path.join(outdir, "pca.png"), logger)
 
         if did_umap:
-            umap_fig = make_dropdown_scatter(
-                out,
-                "UMAP1",
-                "UMAP2",
-                color_cols,
-                hover_cols,
-                f"UMAP (on PCA coords) [{ctx.matrix_key}]",
+            write_scatter_with_styles(
+                df=out,
+                x="UMAP1",
+                y="UMAP2",
+                color_cols=color_cols,
+                hover_cols=hover_cols,
+                title=f"UMAP (on PCA coords) [{ctx.matrix_key}]",
                 color_styles=color_styles,
+                out_html=os.path.join(outdir, "umap.html"),
+                args=args,
+                logger=logger,
+                png_ok=png_ok,
+                out_png=os.path.join(outdir, "umap.png"),
             )
-            umap_html = os.path.join(outdir, "umap.html")
-            umap_fig.write_html(umap_html, include_plotlyjs="cdn")
-            if png_ok:
-                write_plotly_image_safe(umap_fig, os.path.join(outdir, "umap.png"), logger)
 
         # Pairplot
         n_pair = args.pairplot_pcs_n
