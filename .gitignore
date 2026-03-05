@@ -209,3 +209,6 @@ __marimo__/
 
 test*
 hg38*
+
+# local scratch scripts (do not track)
+/scripts/
