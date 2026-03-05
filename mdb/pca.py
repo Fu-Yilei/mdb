@@ -338,8 +338,69 @@ def maybe_merge_metadata(out: pd.DataFrame, metadata_path: str | None, logger=No
     return out, None
 
 
+def maybe_use_concise_sample_ids(out: pd.DataFrame) -> pd.DataFrame:
+    """
+    If multiple sample-id-like columns exist (e.g. sample_id_x/sample_id_y),
+    pick the shortest unique non-empty one for display id.
+    """
+    if out.empty or "id" not in out.columns:
+        return out
+
+    id_vals = out["id"].astype(str)
+    candidate_cols: list[str] = []
+
+    preferred = ["sample_id", "sample_id_y", "sample_name", "sample"]
+    for col in preferred:
+        if col in out.columns and col not in candidate_cols:
+            candidate_cols.append(col)
+    for col in out.columns:
+        if col.startswith("sample_id") and col not in candidate_cols:
+            candidate_cols.append(col)
+
+    best_col = None
+    best_mean_len = None
+    for col in candidate_cols:
+        raw = out[col]
+        if raw.isna().any():
+            continue
+        vals = raw.astype(str).str.strip()
+        if (vals == "").any():
+            continue
+        if vals.nunique(dropna=False) != len(out):
+            continue
+        if vals.equals(id_vals):
+            continue
+        mean_len = float(vals.str.len().mean())
+        if best_col is None or mean_len < best_mean_len:
+            best_col = col
+            best_mean_len = mean_len
+
+    if best_col is None:
+        return out
+
+    labels = out[best_col].astype(str).str.strip()
+    out2 = out.copy()
+    out2["id_original"] = out2["id"].astype(str)
+    out2["id"] = labels
+    if "sample_id" not in out2.columns:
+        out2["sample_id"] = labels
+    return out2
+
+
 def plotly_color_options(meta: pd.DataFrame | None, out: pd.DataFrame, n_pcs: int, did_umap: bool) -> tuple[list[str], list[str]]:
-    hover_cols = [c for c in ["id", "path", "matrix_key"] if c in out.columns]
+    hover_priority = [
+        "id",
+        "sample_id",
+        "donor",
+        "tissue_name",
+        "sex",
+        "age_years",
+        "center",
+        "technology",
+        "preservation",
+        "core",
+    ]
+    hover_cols = [c for c in hover_priority if c in out.columns]
     if meta is None:
         return [], hover_cols
 
@@ -348,8 +409,7 @@ def plotly_color_options(meta: pd.DataFrame | None, out: pd.DataFrame, n_pcs: in
         banned |= {"UMAP1", "UMAP2"}
 
     opts = [c for c in meta.columns if c in out.columns and c not in banned]
-    hover_cols2 = [c for c in (hover_cols + opts) if c in out.columns]
-    return opts, hover_cols2
+    return opts, hover_cols
 
 
 def make_dropdown_scatter(df, x, y, color_cols, hover_cols, title):
@@ -506,6 +566,7 @@ def pca_main(args):
             did_umap = True
 
         out, meta = maybe_merge_metadata(out, getattr(args, "metadata", None), logger=logger)
+        out = maybe_use_concise_sample_ids(out)
 
         out_tsv = os.path.join(outdir, "embedding.tsv")
         out.to_csv(out_tsv, sep="\t", index=False)
