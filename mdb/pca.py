@@ -530,7 +530,8 @@ def resolve_plot_styles(args) -> list[str]:
 
 def apply_style_to_figure(fig: go.Figure, style_name: str, with_dropdown: bool) -> None:
     style = PLOT_STYLE_PRESETS.get(style_name, PLOT_STYLE_PRESETS["studio"])
-    right_margin = 280 if with_dropdown else 85
+    right_margin = 285 if with_dropdown else 95
+    top_margin = 136 if with_dropdown else 96
     fig.update_layout(
         template="none",
         width=1120,
@@ -538,16 +539,16 @@ def apply_style_to_figure(fig: go.Figure, style_name: str, with_dropdown: bool) 
         paper_bgcolor=style["paper_bg"],
         plot_bgcolor=style["plot_bg"],
         colorway=style["colorway"],
-        font=dict(family="Avenir Next, Source Sans Pro, Helvetica Neue, sans-serif", size=14, color=style["font_color"]),
+        font=dict(family="Source Sans Pro, Arial, sans-serif", size=14, color=style["font_color"]),
         title=dict(x=0.01, y=0.98, xanchor="left", yanchor="top", font=dict(size=22, color=style["font_color"])),
-        margin=dict(l=72, r=right_margin, t=92, b=70),
+        margin=dict(l=72, r=right_margin, t=top_margin, b=70),
         legend=dict(
             bgcolor="rgba(255,255,255,0.82)",
             bordercolor=style["menu_border"],
             borderwidth=1,
             x=1.02,
             xanchor="left",
-            y=1.0,
+            y=0.98,
             yanchor="top",
             font=dict(size=11, color=style["font_color"]),
         ),
@@ -567,6 +568,7 @@ def apply_style_to_figure(fig: go.Figure, style_name: str, with_dropdown: bool) 
         linewidth=1.2,
         ticks="outside",
         tickcolor=style["axis"],
+        title=dict(font=dict(size=14, color=style["font_color"])),
     )
     fig.update_yaxes(
         showgrid=True,
@@ -578,6 +580,7 @@ def apply_style_to_figure(fig: go.Figure, style_name: str, with_dropdown: bool) 
         linewidth=1.2,
         ticks="outside",
         tickcolor=style["axis"],
+        title=dict(font=dict(size=14, color=style["font_color"])),
     )
     fig.update_traces(
         selector=dict(type="scatter"),
@@ -596,34 +599,25 @@ def apply_style_to_figure(fig: go.Figure, style_name: str, with_dropdown: bool) 
             menu2["borderwidth"] = 1
             menu2["font"] = dict(size=12, color=style["font_color"])
             menu2["pad"] = dict(l=6, r=6, t=6, b=6)
+            if with_dropdown:
+                menu2["x"] = 0.01
+                menu2["xanchor"] = "left"
+                menu2["y"] = 1.15
+                menu2["yanchor"] = "top"
+                menu2["direction"] = "down"
             styled_menus.append(menu2)
         fig.update_layout(updatemenus=styled_menus)
-
-    # Soft backdrop accents so the chart is less visually flat.
-    fig.add_shape(
-        type="circle",
-        xref="paper",
-        yref="paper",
-        x0=-0.10,
-        x1=0.23,
-        y0=0.78,
-        y1=1.10,
-        fillcolor=style["accent_a"],
-        line=dict(width=0),
-        layer="below",
-    )
-    fig.add_shape(
-        type="circle",
-        xref="paper",
-        yref="paper",
-        x0=0.82,
-        x1=1.16,
-        y0=-0.16,
-        y1=0.18,
-        fillcolor=style["accent_b"],
-        line=dict(width=0),
-        layer="below",
-    )
+        if with_dropdown:
+            fig.add_annotation(
+                xref="paper",
+                yref="paper",
+                x=0.0,
+                y=1.17,
+                text="<b>Color By</b>",
+                showarrow=False,
+                font=dict(size=12, color=style["font_color"]),
+                align="left",
+            )
 
 
 def make_dropdown_scatter(
@@ -637,6 +631,8 @@ def make_dropdown_scatter(
     symbol_col: str | None = None,
     symbol_map: dict[str, str] | None = None,
     style_name: str = "studio",
+    x_axis_label: str | None = None,
+    y_axis_label: str | None = None,
 ):
     scatter_kwargs: dict[str, object] = {}
     if symbol_col and symbol_col in df.columns:
@@ -647,6 +643,8 @@ def make_dropdown_scatter(
     if not color_cols:
         fig = px.scatter(df, x=x, y=y, hover_data=hover_cols, title=title, **scatter_kwargs)
         apply_style_to_figure(fig, style_name=style_name, with_dropdown=False)
+        fig.update_xaxes(title_text=x_axis_label or x)
+        fig.update_yaxes(title_text=y_axis_label or y)
         return fig
 
     master = go.Figure()
@@ -681,6 +679,8 @@ def make_dropdown_scatter(
     if not groups:
         fig = px.scatter(df, x=x, y=y, hover_data=hover_cols, title=title, **scatter_kwargs)
         apply_style_to_figure(fig, style_name=style_name, with_dropdown=False)
+        fig.update_xaxes(title_text=x_axis_label or x)
+        fig.update_yaxes(title_text=y_axis_label or y)
         return fig
 
     buttons = []
@@ -693,6 +693,8 @@ def make_dropdown_scatter(
 
     master.update_layout(updatemenus=[dict(buttons=buttons, direction="down", showactive=True, x=1.02, xanchor="left", y=1.0, yanchor="top")])
     apply_style_to_figure(master, style_name=style_name, with_dropdown=True)
+    master.update_xaxes(title_text=x_axis_label or x)
+    master.update_yaxes(title_text=y_axis_label or y)
     return master
 
 
@@ -772,6 +774,8 @@ def write_scatter_with_styles(
     out_png: str | None = None,
     symbol_col: str | None = None,
     symbol_map: dict[str, str] | None = None,
+    x_axis_label: str | None = None,
+    y_axis_label: str | None = None,
 ) -> None:
     styles = resolve_plot_styles(args)
     html_root, html_ext = os.path.splitext(out_html)
@@ -787,6 +791,8 @@ def write_scatter_with_styles(
             symbol_col=symbol_col,
             symbol_map=symbol_map,
             style_name=style_name,
+            x_axis_label=x_axis_label,
+            y_axis_label=y_axis_label,
         )
         html_path = out_html if idx == 0 else f"{html_root}_{style_name}{html_ext}"
         fig.write_html(html_path, include_plotlyjs="cdn")
@@ -890,6 +896,8 @@ def write_outlier_artifacts(
     args,
     outdir: str,
     matrix_key: str,
+    x_axis_label: str,
+    y_axis_label: str,
     logger: logging.Logger,
     png_ok: bool,
 ) -> None:
@@ -927,6 +935,8 @@ def write_outlier_artifacts(
         out_png=os.path.join(outdir, "pca_with_outliers_marked.png"),
         symbol_col="outlier_status",
         symbol_map={"inlier": "circle", "outlier": "x"},
+        x_axis_label=x_axis_label,
+        y_axis_label=y_axis_label,
     )
 
     inlier_mask = ~out["is_outlier"].to_numpy(dtype=bool)
@@ -948,6 +958,8 @@ def write_outlier_artifacts(
         logger=logger,
         png_ok=png_ok,
         out_png=os.path.join(outdir, "pca_no_outliers.png"),
+        x_axis_label=x_axis_label,
+        y_axis_label=y_axis_label,
     )
 
     n_pair = max(1, min(int(args.pairplot_pcs_n), int(sample_coords.shape[1])))
@@ -1068,6 +1080,13 @@ def pca_main(args):
 
         color_cols, hover_cols = plotly_color_options(meta, out, args.n_pcs, did_umap)
         color_styles = build_color_styles(out, color_cols)
+        evr = getattr(ipca, "explained_variance_ratio_", None)
+        if evr is not None and len(evr) >= 2:
+            x_axis_label = f"PC1 ({float(evr[0]) * 100.0:.2f}% variance explained)"
+            y_axis_label = f"PC2 ({float(evr[1]) * 100.0:.2f}% variance explained)"
+        else:
+            x_axis_label = "PC1"
+            y_axis_label = "PC2"
 
         write_scatter_with_styles(
             df=out,
@@ -1082,6 +1101,8 @@ def pca_main(args):
             logger=logger,
             png_ok=png_ok,
             out_png=os.path.join(outdir, "pca.png"),
+            x_axis_label=x_axis_label,
+            y_axis_label=y_axis_label,
         )
 
         if did_umap:
@@ -1098,6 +1119,8 @@ def pca_main(args):
                 logger=logger,
                 png_ok=png_ok,
                 out_png=os.path.join(outdir, "umap.png"),
+                x_axis_label="UMAP1",
+                y_axis_label="UMAP2",
             )
 
         # Pairplot
@@ -1126,6 +1149,8 @@ def pca_main(args):
                 args=args,
                 outdir=outdir,
                 matrix_key=ctx.matrix_key,
+                x_axis_label=x_axis_label,
+                y_axis_label=y_axis_label,
                 logger=logger,
                 png_ok=png_ok,
             )
