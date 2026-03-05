@@ -17,9 +17,15 @@ def main(argv=None):
     elif args.command == "merge":
         from mdb.merge import merge_main
         merge_main(args)    
+    elif args.command == "append":
+        from mdb.merge import append_main
+        append_main(args)
     elif args.command == "pca":
         from mdb.pca import pca_main
         pca_main(args)
+    elif args.command == "query":
+        from mdb.query import query_main
+        query_main(args)
     return 0
 
 
