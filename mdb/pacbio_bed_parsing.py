@@ -13,10 +13,8 @@ from tqdm.auto import tqdm
 PB_COL_CHROM = "chrom"
 PB_COL_START = "begin"
 PB_COL_COV = "cov"
-PB_COL_DMS = "discretized_mod_score"  # 0..100
-
-import os
-from typing import Dict
+PB_COL_DMS = "discretized_mod_score"  # standard cpg_scores schema, 0..100
+PB_COL_MOD_SCORE = "mod_score"  # pileup-mode=count schema, 0..100
 
 
 def discover_pacbio_beds(path: str) -> Dict[str, str]:
@@ -137,9 +135,10 @@ def fill_one_sample_pacbio(
     min_cov: int,
     ) -> Dict[str, int]:
     """
-    PacBio pb-cpg-tools 'cpg_scores' TSV:
+    PacBio pb-cpg-tools TSV:
     - comment lines start with ## and a header line starts with '#chrom ...'
-    - uses discretized_mod_score (0..100) as methylation percent for CpG.
+    - standard cpg_scores uses discretized_mod_score (0..100)
+    - pileup-mode=count uses mod_score (0..100)
     - 5hmC not available -> M_5hmC column stays NaN.
 
     This reader:
@@ -164,18 +163,21 @@ def fill_one_sample_pacbio(
     schema_names = lf.collect_schema().names()
     lf = lf.rename({"#chrom": PB_COL_CHROM}) if "#chrom" in schema_names else lf
 
-    # Keep required columns only
-    needed = [PB_COL_CHROM, PB_COL_START, PB_COL_DMS, PB_COL_COV]
     schema_names = lf.collect_schema().names()
+    score_col = PB_COL_DMS if PB_COL_DMS in schema_names else PB_COL_MOD_SCORE if PB_COL_MOD_SCORE in schema_names else None
+
+    # Keep required columns only
+    needed = [PB_COL_CHROM, PB_COL_START, PB_COL_COV]
     missing = [c for c in needed if c not in schema_names]
-    if missing:
+    if missing or score_col is None:
+        expected_score_cols = [PB_COL_DMS, PB_COL_MOD_SCORE]
         raise ValueError(
-            f"PacBio file missing columns {missing}. "
-            f"Found columns: {lf.columns}"
+            f"PacBio file missing columns {missing} or a score column from {expected_score_cols}. "
+            f"Found columns: {schema_names}"
         )
 
     lf = (
-        lf.select(needed)
+        lf.select(needed + [score_col])
           .filter(pl.col(PB_COL_CHROM).is_in(allowed_chroms))
     )
     if min_cov > 0:
@@ -192,9 +194,8 @@ def fill_one_sample_pacbio(
     if df.height == 0:
         return stats
 
-    # discretized_mod_score is percent 0..100
-
-    df = df.with_columns((pl.col(PB_COL_DMS) / 100.0).cast(pl.Float32).alias("val"))
+    # Both supported PacBio schemas store methylation percent on a 0..100 scale.
+    df = df.with_columns((pl.col(score_col) / 100.0).cast(pl.Float32).alias("val"))
 
     mapped = 0
     for chrom, sub in df.group_by(PB_COL_CHROM, maintain_order=True):

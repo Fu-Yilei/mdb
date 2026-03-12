@@ -42,6 +42,19 @@ def pacbio_text(rows: list[tuple[str, int, int, int]]) -> str:
     return header + body
 
 
+def pacbio_count_text(rows: list[tuple[str, int, float, int, int, int]]) -> str:
+    header = (
+        "##pb-cpg-tools-version=3.0.0\n"
+        "##pileup-mode=count\n"
+        "#chrom\tbegin\tend\tmod_score\ttype\tcov\tmod_count\tunmod_count\tavg_mod_score\tavg_unmod_score\n"
+    )
+    body = "".join(
+        f"{chrom}\t{start}\t{start + 1}\t{score:.1f}\tTotal\t{cov}\t{mod_count}\t{unmod_count}\t0.900\t0.100\n"
+        for chrom, start, score, cov, mod_count, unmod_count in rows
+    )
+    return header + body
+
+
 def _workspace(tmp_path: Path) -> dict[str, Path]:
     ref = tmp_path / "ref.fa"
     write_text(ref, ">chr1\nACGCGTACG\n>chr2\nTACGCGCGT\n")
@@ -214,6 +227,34 @@ def test_append_zarr_adds_columns(tmp_path: Path):
     point = query_cohort_point(str(cohort_zarr), key, "pb_a", "chr1", 1)
     assert point is not None
     assert point["value_percent"] == 76.0
+
+
+def test_create_pacbio_count_schema_bundle(tmp_path: Path):
+    ws = _workspace(tmp_path)
+    pacbio_count_prefix = ws["tmp"] / "pb_count" / "sample_pb_count"
+    write_gzip_text(
+        Path(str(pacbio_count_prefix) + ".combined.bed.gz"),
+        pacbio_count_text([("chr1", 1, 75.0, 6, 4, 2), ("chr1", 3, 50.0, 6, 3, 3), ("chr2", 2, 25.0, 8, 2, 6)]),
+    )
+    write_gzip_text(
+        Path(str(pacbio_count_prefix) + ".hap1.bed.gz"),
+        pacbio_count_text([("chr1", 1, 100.0, 6, 6, 0), ("chr1", 7, 25.0, 8, 2, 6), ("chr2", 4, 50.0, 6, 3, 3)]),
+    )
+    write_gzip_text(
+        Path(str(pacbio_count_prefix) + ".hap2.bed.gz"),
+        pacbio_count_text([("chr1", 1, 0.0, 6, 0, 6), ("chr1", 7, 75.0, 8, 6, 2), ("chr2", 6, 50.0, 6, 3, 3)]),
+    )
+
+    pb_count_bundle = ws["tmp"] / "sample_pb_count.smdb"
+    create_bundle(ws["index"], "pacbio", pacbio_count_prefix, pb_count_bundle, "pb_count_a")
+
+    cohort_zarr = ws["tmp"] / "cohort_pb_count_zarr.mmdb"
+    merge_bundles([pb_count_bundle], cohort_zarr, backend="zarr")
+
+    key = TrackKey("5mC", "combined", "combined")
+    point = query_cohort_point(str(cohort_zarr), key, "pb_count_a", "chr1", 1)
+    assert point is not None
+    assert point["value_percent"] == 75.0
 
 
 def test_zarr_missing_chromosome_returns_missing_values(tmp_path: Path):
