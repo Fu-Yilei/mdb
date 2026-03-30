@@ -162,6 +162,8 @@ When `--outlier_detect` is enabled, `pca` also writes:
 - `outliers_only.tsv` (flagged samples),
 - `pca_with_outliers_marked.html`,
 - `pca_no_outliers.html`,
+- `pca_pairplot.html`,
+- `pca_pairplot_no_outliers.html`,
 - `pca_pairplot_no_outliers.png`.
 
 When `--plot_style_variants` is enabled, extra style comparison HTML files are written (for example `pca_studio.html`, `pca_sunrise.html`, `pca_paper.html` depending on selected primary style).

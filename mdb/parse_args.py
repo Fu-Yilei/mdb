@@ -94,6 +94,15 @@ def parse_args(argv):
     pca_parser.add_argument("--strand", default="combined", help="Track strand to analyze, default=combined")
     pca_parser.add_argument("-pn", "--pairplot_pcs_n", type=int, default=5, help="Top n PCs to include in pairplot, default=5")
     pca_parser.add_argument("--frac_cpgs", type=float, default=0.1, help="Fraction of eligible CpGs to sample for PCA fit, default=0.1")
+    pca_parser.add_argument("--cpg-bed", dest="cpg_bed", default=None, help="BED file of regions; restrict CpG selection to only these loci before PCA (cohort store only)")
+    pca_parser.add_argument(
+        "--cpg-bed-agg",
+        dest="cpg_bed_agg",
+        action="store_true",
+        help="Requires --cpg-bed. Instead of filtering CpGs, compute per-region average methylation "
+             "across all CpGs in each BED region per sample, write a region×sample TSV (region_avg.tsv), "
+             "and run PCA on that regions×samples matrix. Not available in genome-wide mode.",
+    )
     pca_parser.add_argument("--n_pcs", type=int, default=10, help="Number of PCs to compute, default=10")
     pca_parser.add_argument("--min_frac_present", type=float, default=0.8, help="Min fraction of samples with non-missing data at a CpG")
     pca_parser.add_argument("--batch_rows", type=int, default=400_000, help="Rows per streaming block, default=400,000")
@@ -139,6 +148,91 @@ def parse_args(argv):
         help="Write additional style-variant HTML files for visual comparison",
     )
     pca_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
+
+    asmpca_parser = subparsers.add_parser("asmpca", help="PCA on ONT ASM segment BEDs using DMR regions")
+    asmpca_parser.add_argument(
+        "-i",
+        "--inputs",
+        nargs="+",
+        required=True,
+        help="Input ASM segment BEDs, directories, globs, or a .txt manifest of paths",
+    )
+    asmpca_parser.add_argument("-o", "--outdir", required=True, help="Output directory for ASM PCA results")
+    asmpca_parser.add_argument(
+        "--dmr-regions",
+        help="Optional BED of DMR regions; default is merged union of name=different rows from the input segment BEDs",
+    )
+    asmpca_parser.add_argument(
+        "--exclude-sex-chromosomes",
+        action="store_true",
+        help="Exclude chrX/chrY cohort DMR regions before PCA",
+    )
+    asmpca_parser.add_argument(
+        "--feature-mode",
+        choices=("dmr_location", "segment_metric"),
+        default="dmr_location",
+        help="ASM feature encoding for PCA: binary DMR-location presence or projected segment metric, default=dmr_location",
+    )
+    asmpca_parser.add_argument(
+        "--metric",
+        choices=("effect_size", "cohen_h", "score"),
+        default="effect_size",
+        help="ASM segment metric to project onto regions when --feature-mode=segment_metric, default=effect_size",
+    )
+    asmpca_parser.add_argument(
+        "--min-region-samples",
+        type=int,
+        default=2,
+        help="Require each DMR region to be observed in at least this many samples for PCA fit, default=2",
+    )
+    asmpca_parser.add_argument(
+        "--min-frac-present",
+        type=float,
+        default=0.1,
+        help="Minimum fraction of samples with non-missing values at a DMR region, default=0.1",
+    )
+    asmpca_parser.add_argument("--n-pcs", type=int, default=10, help="Number of PCs to compute, default=10")
+    asmpca_parser.add_argument("-pn", "--pairplot_pcs_n", type=int, default=5, help="Top n PCs to include in pairplot, default=5")
+    asmpca_parser.add_argument(
+        "--pairplot-mode",
+        choices=("metadata", "sample", "none"),
+        help="Pairplot coloring mode: metadata, sample, or none; default auto",
+    )
+    asmpca_parser.add_argument("--pairplot-hue", help="Preferred metadata column for pairplot hue when --pairplot-mode metadata")
+    asmpca_parser.add_argument("--pairplot_diag_kind", choices=("kde", "hist"), default="kde", help="Pairplot diagonal kind, default=kde")
+    asmpca_parser.add_argument("--pairplot_corner", action="store_true", help="Use lower triangle only for pairplot")
+    asmpca_parser.add_argument(
+        "--merge-gap",
+        type=int,
+        default=0,
+        help="Merge DMR intervals whose gap is <= this many bases when defining cohort regions, default=0",
+    )
+    asmpca_parser.add_argument(
+        "-m",
+        "--metadata",
+        "--manifest",
+        dest="metadata",
+        help="Metadata/manifest TSV/CSV with sample_id or id column",
+    )
+    asmpca_parser.add_argument(
+        "--batch-rows",
+        type=int,
+        default=50_000,
+        help="Rows per block for PCA fitting, default=50,000",
+    )
+    asmpca_parser.add_argument("--seed", type=int, default=1, help="Random seed, default=1")
+    asmpca_parser.add_argument(
+        "--plot_style",
+        choices=("studio", "sunrise", "paper"),
+        default="studio",
+        help="Plot style preset for PCA HTML, default=studio",
+    )
+    asmpca_parser.add_argument(
+        "--plot_style_variants",
+        action="store_true",
+        help="Write additional style-variant HTML files for visual comparison",
+    )
+    asmpca_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
 
     query_parser = subparsers.add_parser("query", help="Query a sample bundle or cohort store at one CpG locus")
     query_parser.add_argument("-i", "--input", required=True, help="Input sample bundle directory or cohort store")

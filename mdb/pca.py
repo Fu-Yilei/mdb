@@ -8,10 +8,10 @@ Outputs:
   embedding.tsv, params.json, pca_umap.log
   pca.html (+ pca.png when plotly image engine exists)
   umap.html (+ umap.png when requested and available)
-  pca_pairplot.png
+  pca_pairplot.html, pca_pairplot.png
   (optional) outlier_report.tsv, outliers_only.tsv,
              pca_with_outliers_marked.html, pca_no_outliers.html,
-             pca_pairplot_no_outliers.png
+             pca_pairplot_no_outliers.html, pca_pairplot_no_outliers.png
 """
 
 import os
@@ -235,6 +235,25 @@ class ReaderMatrixSource:
         self.reader.close()
 
 
+class _ArrayMatrixSource:
+    """Thin in-memory source wrapping a pre-built numpy matrix."""
+
+    def __init__(self, matrix: np.ndarray):
+        self.matrix = np.asarray(matrix, dtype=np.float32)
+        self.shape = self.matrix.shape
+
+    def iter_blocks(self, batch_rows: int):
+        n_rows = int(self.shape[0])
+        for start in range(0, n_rows, batch_rows):
+            yield self.matrix[start : min(start + batch_rows, n_rows), :]
+
+    def read_rows(self, row_idx: np.ndarray) -> np.ndarray:
+        return self.matrix[row_idx, :]
+
+    def close(self) -> None:
+        pass
+
+
 def build_legacy_input_context(input_path: str) -> InputContext:
     sample_paths, sample_ids = load_samples_from_merged_folder(input_path)
     matrix_key, matrix_path = pick_matrix_path(input_path)
@@ -296,6 +315,160 @@ def load_input_context(input_path: str, args) -> InputContext:
 
 
 # ----------------------------
+# BED-based CpG row filter
+# ----------------------------
+def _read_bed_for_cpg_filter(path: str) -> pd.DataFrame:
+    """Read the first 3 columns of a BED file; return chrom/start/end DataFrame."""
+    with open(path) as fh:
+        first = fh.readline()
+    header = 0 if (first.startswith("#") or first.lower().startswith("chrom")) else None
+    df = pd.read_csv(path, sep="\t", header=header)
+    df = df.iloc[:, :3].copy()
+    df.columns = ["chrom", "start", "end"]
+    df["chrom"] = df["chrom"].astype(str)
+    df["start"] = pd.to_numeric(df["start"], errors="raise").astype(np.int64)
+    df["end"] = pd.to_numeric(df["end"], errors="raise").astype(np.int64)
+    return df[df["end"] > df["start"]].reset_index(drop=True)
+
+
+def cpg_rows_from_bed(input_path: str, bed_path: str) -> np.ndarray:
+    """Return sorted global row indices of CpGs overlapping any region in bed_path.
+
+    Requires a cohort store with a reference index (pos0 per chromosome).
+    Raises ValueError for legacy .npy inputs that have no position info.
+    """
+    from mdb.storage import load_cohort_index
+
+    chroms, chrom_offsets, pos0 = load_cohort_index(input_path)
+    n_rows = int(pos0.shape[0])
+    chrom_ends = np.asarray(
+        [int(chrom_offsets[i + 1]) if i + 1 < len(chrom_offsets) else n_rows for i in range(len(chroms))],
+        dtype=np.int64,
+    )
+    chrom_to_cidx = {c: i for i, c in enumerate(chroms)}
+
+    regions = _read_bed_for_cpg_filter(bed_path)
+    keep = np.zeros(n_rows, dtype=bool)
+
+    for chrom, grp in regions.groupby("chrom", sort=False):
+        cidx = chrom_to_cidx.get(str(chrom))
+        if cidx is None:
+            continue
+        row_start = int(chrom_offsets[cidx])
+        row_end = int(chrom_ends[cidx])
+        if row_start >= row_end:
+            continue
+        local_pos = pos0[row_start:row_end].astype(np.int64)
+        for _, row in grp.iterrows():
+            lo = int(np.searchsorted(local_pos, int(row["start"]), side="left"))
+            hi = int(np.searchsorted(local_pos, int(row["end"]), side="left"))
+            if lo < hi:
+                keep[row_start + lo : row_start + hi] = True
+
+    return np.flatnonzero(keep)
+
+
+def compute_region_avg_matrix(
+    source,
+    bed_path: str,
+    input_path: str,
+    *,
+    batch_rows: int = 50_000,
+    logger=None,
+) -> tuple[np.ndarray, pd.DataFrame, np.ndarray]:
+    """Compute a (n_regions × n_samples) average-methylation matrix from BED regions.
+
+    For each BED region, averages the methylation values of all CpGs within it
+    per sample.  Regions with no overlapping CpGs get NaN for all samples.
+
+    Returns
+    -------
+    matrix : np.ndarray, shape (n_regions, n_samples), float32
+    regions_df : pd.DataFrame  with columns chrom/start/end (reset index 0..n_regions-1)
+    n_cpgs_per_region : np.ndarray, shape (n_regions,), int64
+    """
+    from mdb.storage import load_cohort_index
+
+    chroms, chrom_offsets, pos0 = load_cohort_index(input_path)
+    n_total_rows = int(pos0.shape[0])
+    chrom_ends = np.asarray(
+        [int(chrom_offsets[i + 1]) if i + 1 < len(chrom_offsets) else n_total_rows for i in range(len(chroms))],
+        dtype=np.int64,
+    )
+    chrom_to_cidx = {c: i for i, c in enumerate(chroms)}
+
+    regions_df = _read_bed_for_cpg_filter(bed_path).reset_index(drop=True)
+    n_regions = len(regions_df)
+    n_samples = int(source.shape[1])
+
+    if logger:
+        logger.info(f"Region aggregation: {n_regions:,} regions × {n_samples} samples")
+
+    matrix = np.full((n_regions, n_samples), np.nan, dtype=np.float32)
+    n_cpgs_per_region = np.zeros(n_regions, dtype=np.int64)
+
+    for chrom, grp in tqdm(regions_df.groupby("chrom", sort=False), desc="Aggregating regions", unit="chrom"):
+        cidx = chrom_to_cidx.get(str(chrom))
+        if cidx is None:
+            continue
+        row_start = int(chrom_offsets[cidx])
+        row_end = int(chrom_ends[cidx])
+        if row_start >= row_end:
+            continue
+        local_pos = pos0[row_start:row_end].astype(np.int64)
+
+        reg_indices = grp.index.to_numpy(dtype=np.int64)
+        starts = grp["start"].to_numpy(dtype=np.int64)
+        ends = grp["end"].to_numpy(dtype=np.int64)
+
+        # Vectorised searchsorted: find CpG position range for each region
+        los = np.searchsorted(local_pos, starts, side="left").astype(np.int64)
+        his = np.searchsorted(local_pos, ends, side="left").astype(np.int64)
+        n_cpgs_v = his - los
+        n_cpgs_per_region[reg_indices] = n_cpgs_v
+
+        valid_mask = n_cpgs_v > 0
+        if not np.any(valid_mask):
+            continue
+
+        los_v = los[valid_mask]
+        his_v = his[valid_mask]
+        reg_idx_v = reg_indices[valid_mask]  # global region indices for this subset
+        n_cpgs_vv = n_cpgs_v[valid_mask]
+        n_local = len(reg_idx_v)
+
+        # Build flat arrays of global row indices and per-chromosome local region indices.
+        # Fully vectorised — no Python loop over regions.
+        cumsum = np.concatenate([[np.int64(0)], np.cumsum(n_cpgs_vv)])
+        n_total_chrom = int(cumsum[-1])
+        within_offsets = np.arange(n_total_chrom, dtype=np.int64) - np.repeat(cumsum[:-1], n_cpgs_vv)
+        global_rows = row_start + np.repeat(los_v, n_cpgs_vv) + within_offsets  # sorted
+        local_reg_idx = np.repeat(np.arange(n_local, dtype=np.int64), n_cpgs_vv)
+
+        # Per-chromosome accumulators (much smaller than full matrix)
+        chrom_sum = np.zeros((n_local, n_samples), dtype=np.float64)
+        chrom_count = np.zeros((n_local, n_samples), dtype=np.int32)
+
+        for b_start in range(0, n_total_chrom, batch_rows):
+            b_rows = global_rows[b_start : b_start + batch_rows]
+            b_regs = local_reg_idx[b_start : b_start + batch_rows]
+            block = np.asarray(source.read_rows(b_rows), dtype=np.float32)
+            valid = ~np.isnan(block)
+            np.add.at(chrom_sum, b_regs, np.where(valid, block.astype(np.float64), 0.0))
+            np.add.at(chrom_count, b_regs, valid.astype(np.int32))
+
+        has_data = chrom_count > 0
+        chrom_mean = np.where(has_data, chrom_sum / np.maximum(chrom_count, 1), np.nan).astype(np.float32)
+        matrix[reg_idx_v, :] = chrom_mean
+
+    n_covered = int(np.sum(n_cpgs_per_region > 0))
+    if logger:
+        logger.info(f"Region aggregation: {n_covered:,}/{n_regions:,} regions have ≥1 CpG")
+
+    return matrix, regions_df, n_cpgs_per_region
+
+
+# ----------------------------
 # Streaming helpers (fast + simple)
 # ----------------------------
 def choose_rows_by_presence(source, min_frac_present=0.8, batch_rows=200_000) -> np.ndarray:
@@ -311,6 +484,25 @@ def choose_rows_by_presence(source, min_frac_present=0.8, batch_rows=200_000) ->
     if cursor != n_cpgs:
         raise RuntimeError(f"Row scan mismatch: scanned {cursor} rows, expected {n_cpgs}")
     return np.flatnonzero(keep)
+
+
+def choose_rows_by_presence_subset(
+    source, row_subset: np.ndarray, min_frac_present=0.8, batch_rows=200_000
+) -> np.ndarray:
+    """Presence filter restricted to row_subset (sorted int64 indices).
+
+    Much faster than choose_rows_by_presence when row_subset << total rows,
+    because only the requested rows are read from disk rather than the full matrix.
+    """
+    if float(min_frac_present) <= 0:
+        return row_subset
+    n = len(row_subset)
+    keep = np.zeros(n, dtype=bool)
+    for start in range(0, n, batch_rows):
+        rows = row_subset[start : start + batch_rows]
+        block = np.asarray(source.read_rows(rows), dtype=np.float32)
+        keep[start : start + len(rows)] = np.mean(~np.isnan(block), axis=1) >= float(min_frac_present)
+    return row_subset[keep]
 
 
 def subsample_rows(rows: np.ndarray, frac: float, seed: int) -> np.ndarray:
@@ -361,22 +553,34 @@ def fit_ipca_sample_coords(
     batch_rows=200_000,
     seed=1,
     logger=None,
+    preselected_rows: np.ndarray | None = None,
 ):
     """
     Fit IPCA on source (n_cpgs x n_samples) and return SAMPLE coordinates.
+
+    If preselected_rows is provided (sorted int64 array of row indices), only those rows
+    are considered as candidates before presence filtering and frac_cpgs subsampling.
     """
     n_rows = int(source.shape[0])
     if float(min_frac_present) <= 0 and float(frac_cpgs) < 1.0:
         rng = np.random.default_rng(seed)
-        k = max(int(n_rows * float(frac_cpgs)), 1)
-        row_idx = np.sort(rng.choice(n_rows, size=k, replace=False)).astype(np.int64)
-        eligible_count = n_rows
+        pool = preselected_rows if preselected_rows is not None else np.arange(n_rows, dtype=np.int64)
+        k = max(int(len(pool) * float(frac_cpgs)), 1)
+        row_idx = np.sort(rng.choice(pool, size=k, replace=False)).astype(np.int64)
+        eligible_count = int(len(pool))
     else:
-        rows_ok = choose_rows_by_presence(source, min_frac_present=min_frac_present, batch_rows=batch_rows)
+        if preselected_rows is not None:
+            rows_ok = choose_rows_by_presence_subset(
+                source, preselected_rows, min_frac_present=min_frac_present, batch_rows=batch_rows
+            )
+        else:
+            rows_ok = choose_rows_by_presence(source, min_frac_present=min_frac_present, batch_rows=batch_rows)
         row_idx = subsample_rows(rows_ok, frac=frac_cpgs, seed=seed)
         eligible_count = int(len(rows_ok))
 
     if logger:
+        if preselected_rows is not None:
+            logger.info(f"CpG BED filter applied: {len(preselected_rows)} rows preselected")
         logger.info(f"Eligible CpGs: {eligible_count}; using for fit: {len(row_idx)} (frac_cpgs={frac_cpgs})")
 
     mean, std, obs_count = streaming_mean_std(source, row_idx, batch_rows=batch_rows)
@@ -499,13 +703,30 @@ def plotly_color_options(meta: pd.DataFrame | None, out: pd.DataFrame, n_pcs: in
     return opts, hover_cols
 
 
+def normalize_color_value(color: object) -> object:
+    if not isinstance(color, str):
+        return color
+    if color.startswith("rgb(") and color.endswith(")"):
+        parts = [p.strip() for p in color[4:-1].split(",")]
+        if len(parts) == 3:
+            try:
+                r, g, b = (max(0, min(255, int(float(part)))) for part in parts)
+                return f"#{r:02x}{g:02x}{b:02x}"
+            except ValueError:
+                return color
+    return color
+
+
 def build_color_styles(df: pd.DataFrame, color_cols: list[str]) -> dict[str, dict[str, object]]:
-    palette = (
+    palette = [
+        normalize_color_value(color)
+        for color in (
         px.colors.qualitative.Safe
         + px.colors.qualitative.Set3
         + px.colors.qualitative.Plotly
         + px.colors.qualitative.Dark24
-    )
+        )
+    ]
     styles: dict[str, dict[str, object]] = {}
     for col in color_cols:
         if col not in df.columns:
@@ -589,6 +810,14 @@ def apply_style_to_figure(fig: go.Figure, style_name: str, with_dropdown: bool) 
             size=style["marker_size"],
             opacity=style["marker_opacity"],
             line=dict(color=style["marker_line"], width=0.7),
+        ),
+    )
+    fig.update_traces(
+        selector=dict(type="splom"),
+        marker=dict(
+            size=max(5, int(style["marker_size"]) - 4),
+            opacity=min(0.78, float(style["marker_opacity"])),
+            line=dict(color=style["marker_line"], width=0.45),
         ),
     )
     if fig.layout.updatemenus:
@@ -699,42 +928,238 @@ def make_dropdown_scatter(
     return master
 
 
+def prepare_pairplot_df(scores: np.ndarray, manifest: pd.DataFrame) -> pd.DataFrame:
+    scores = np.asarray(scores)
+    pc_cols_all = [f"PC{i+1}" for i in range(scores.shape[1])]
+    man = manifest.reset_index(drop=True).copy()
+    man = man.drop(columns=[c for c in man.columns if c in pc_cols_all], errors="ignore")
+    return pd.concat([man, pd.DataFrame(scores, columns=pc_cols_all)], axis=1)
+
+
+def resolve_pairplot_dimensions(
+    df: pd.DataFrame,
+    pcs: tuple[str, ...],
+    pc_label_map: dict[str, str] | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    dimensions = [pc for pc in pcs if pc in df.columns]
+    labels = {pc: (pc_label_map or {}).get(pc, pc) for pc in dimensions}
+    return dimensions, labels
+
+
+def pairplot_color_columns(
+    df: pd.DataFrame,
+    color_cols: list[str] | None,
+    default_color_col: str | None = None,
+) -> list[str]:
+    ordered: list[str] = []
+    if default_color_col and default_color_col in df.columns:
+        ordered.append(default_color_col)
+    for col in color_cols or []:
+        if col in df.columns and col not in ordered:
+            ordered.append(col)
+    return ordered
+
+
+def pairplot_category_style(
+    df: pd.DataFrame,
+    col: str,
+    color_styles: dict[str, dict[str, object]] | None = None,
+) -> tuple[list[str] | None, dict[str, str] | None]:
+    if col not in df.columns:
+        return None, None
+    vals = df[col].astype(str)
+    present = set(vals.unique().tolist())
+    style = (color_styles or {}).get(col, {})
+    ordered = [v for v in style.get("ordered", []) if v in present]
+    extras = sorted(present - set(ordered))
+    ordered.extend(extras)
+    cmap_raw = style.get("cmap", {})
+    cmap = {k: cmap_raw[k] for k in ordered if k in cmap_raw}
+    return ordered or None, cmap or None
+
+
+def style_pairplot_figure(
+    fig: go.Figure,
+    *,
+    style_name: str,
+    with_dropdown: bool,
+    n_dimensions: int,
+) -> None:
+    apply_style_to_figure(fig, style_name=style_name, with_dropdown=with_dropdown)
+    side = max(920, 220 * int(n_dimensions))
+    right_margin = 315 if with_dropdown else 120
+    top_margin = 136 if with_dropdown else 96
+    fig.update_layout(
+        width=side + right_margin,
+        height=side,
+        margin=dict(l=72, r=right_margin, t=top_margin, b=70),
+        dragmode="select",
+    )
+    fig.update_traces(
+        selector=dict(type="splom"),
+        diagonal_visible=False,
+    )
+
+
+def make_dropdown_pairplot(
+    df: pd.DataFrame,
+    *,
+    pcs: tuple[str, ...],
+    color_cols: list[str],
+    hover_cols: list[str],
+    title: str,
+    color_styles: dict[str, dict[str, object]] | None = None,
+    default_color_col: str | None = None,
+    corner: bool = False,
+    pc_label_map: dict[str, str] | None = None,
+    style_name: str = "studio",
+):
+    dimensions, labels = resolve_pairplot_dimensions(df, pcs, pc_label_map)
+    hover_cols = [c for c in hover_cols if c in df.columns and c not in dimensions]
+    color_cols = pairplot_color_columns(df, color_cols, default_color_col)
+    base_kwargs: dict[str, object] = dict(
+        dimensions=dimensions,
+        hover_data=hover_cols,
+        labels=labels,
+    )
+
+    if not color_cols:
+        fig = px.scatter_matrix(df, title=title, **base_kwargs)
+        fig.update_traces(selector=dict(type="splom"), showupperhalf=not corner)
+        style_pairplot_figure(fig, style_name=style_name, with_dropdown=False, n_dimensions=len(dimensions))
+        return fig
+
+    master = go.Figure()
+    groups = []
+    initial_title = title
+    for i, col in enumerate(color_cols):
+        tmp_df = df.copy()
+        tmp_df[col] = tmp_df[col].astype(str)
+        category_order, cmap = pairplot_category_style(tmp_df, col, color_styles)
+        scatter_args: dict[str, object] = dict(base_kwargs)
+        if category_order:
+            scatter_args["category_orders"] = {col: category_order}
+        if cmap:
+            scatter_args["color_discrete_map"] = cmap
+        tmp = px.scatter_matrix(
+            tmp_df,
+            color=col,
+            title=f"{title} (color_by={col})",
+            **scatter_args,
+        )
+        tmp.update_traces(selector=dict(type="splom"), showupperhalf=not corner)
+        start = len(master.data)
+        for tr in tmp.data:
+            tr.visible = (i == 0)
+            master.add_trace(tr)
+        end = len(master.data)
+        groups.append((col, start, end))
+        if i == 0:
+            initial_title = f"{title} (color_by={col})"
+
+    buttons = []
+    n_tr = len(master.data)
+    for col, start, end in groups:
+        vis = [False] * n_tr
+        for j in range(start, end):
+            vis[j] = True
+        buttons.append(
+            dict(
+                label=col,
+                method="update",
+                args=[{"visible": vis}, {"title": f"{title} (color_by={col})"}],
+            )
+        )
+
+    master.update_layout(
+        title=initial_title,
+        updatemenus=[
+            dict(
+                buttons=buttons,
+                direction="down",
+                showactive=True,
+                x=1.02,
+                xanchor="left",
+                y=1.0,
+                yanchor="top",
+            )
+        ],
+    )
+    style_pairplot_figure(master, style_name=style_name, with_dropdown=True, n_dimensions=len(dimensions))
+    return master
+
+
+def write_pairplot_with_styles(
+    *,
+    scores: np.ndarray,
+    manifest: pd.DataFrame,
+    out_html: str,
+    pcs: tuple[str, ...],
+    color_cols: list[str],
+    hover_cols: list[str],
+    title: str,
+    color_styles: dict[str, dict[str, object]],
+    default_color_col: str | None,
+    corner: bool,
+    pc_label_map: dict[str, str] | None,
+    args,
+) -> None:
+    df = prepare_pairplot_df(scores, manifest)
+    styles = resolve_plot_styles(args)
+    html_root, html_ext = os.path.splitext(out_html)
+    for idx, style_name in enumerate(styles):
+        fig = make_dropdown_pairplot(
+            df=df,
+            pcs=pcs,
+            color_cols=color_cols,
+            hover_cols=hover_cols,
+            title=title,
+            color_styles=color_styles,
+            default_color_col=default_color_col,
+            corner=corner,
+            pc_label_map=pc_label_map,
+            style_name=style_name,
+        )
+        html_path = out_html if idx == 0 else f"{html_root}_{style_name}{html_ext}"
+        fig.write_html(html_path, include_plotlyjs="cdn")
+
+
 def write_pairplot_png(
     scores: np.ndarray,
     manifest: pd.DataFrame,
     out_png: str,
     pcs: tuple[str, ...],
     hue: str | None = None,
+    color_styles: dict[str, dict[str, object]] | None = None,
     diag_kind="kde",
     corner=False,
     pc_label_map: dict[str, str] | None = None,
     title: str | None = None,
 ):
-    # Build a clean df: (manifest without PC*) + (PCs from scores)
-    scores = np.asarray(scores)
-    pc_cols_all = [f"PC{i+1}" for i in range(scores.shape[1])]
-    man = manifest.reset_index(drop=True).copy()
-    man = man.drop(columns=[c for c in man.columns if c in pc_cols_all], errors="ignore")
-    pca_df = pd.concat([man, pd.DataFrame(scores, columns=pc_cols_all)], axis=1)
-
-    cols = list(pcs) + ([hue] if hue else [])
+    pca_df = prepare_pairplot_df(scores, manifest)
+    dimensions, labels = resolve_pairplot_dimensions(pca_df, pcs, pc_label_map)
+    cols = list(dimensions) + ([hue] if hue else [])
     df_plot = pca_df[cols].copy()
-    for pc in pcs:
+    for pc in dimensions:
         df_plot[pc] = pd.to_numeric(df_plot[pc], errors="coerce")
-    vars_plot = list(pcs)
-    if pc_label_map:
-        rename_map = {pc: pc_label_map.get(pc, pc) for pc in pcs}
+    vars_plot = list(dimensions)
+    if labels:
+        rename_map = {pc: labels.get(pc, pc) for pc in dimensions}
         df_plot = df_plot.rename(columns=rename_map)
-        vars_plot = [rename_map[pc] for pc in pcs]
+        vars_plot = [rename_map[pc] for pc in dimensions]
 
     hue_palette = None
     hue_order: list[str] = []
     if hue:
         hue_vals = df_plot[hue].astype(str).fillna("NA")
-        hue_order = sorted(hue_vals.unique().tolist())
+        style_order, style_cmap = pairplot_category_style(df_plot, hue, color_styles)
+        hue_order = style_order or sorted(hue_vals.unique().tolist())
         df_plot[hue] = pd.Categorical(hue_vals, categories=hue_order, ordered=True)
-        palette = sns.color_palette("tab20", n_colors=max(len(hue_order), 3))
-        hue_palette = {cat: palette[i % len(palette)] for i, cat in enumerate(hue_order)}
+        if style_cmap:
+            hue_palette = {cat: style_cmap.get(cat) for cat in hue_order if cat in style_cmap}
+        else:
+            palette = sns.color_palette("tab20", n_colors=max(len(hue_order), 3))
+            hue_palette = {cat: palette[i % len(palette)] for i, cat in enumerate(hue_order)}
 
     sns.set_theme(style="whitegrid", context="notebook")
     plot_kws = dict(s=16, alpha=0.72, linewidth=0.25, edgecolor="white")
@@ -1064,12 +1489,27 @@ def write_outlier_artifacts(
     if int(inlier_mask.sum()) >= 2:
         manifest_no_outlier = inlier_df.drop(columns=[f"PC{i+1}" for i in range(int(sample_coords.shape[1]))], errors="ignore")
         hue2 = hue if hue in manifest_no_outlier.columns else None
+        write_pairplot_with_styles(
+            scores=np.asarray(sample_coords[inlier_mask, :], dtype=np.float32),
+            manifest=manifest_no_outlier,
+            out_html=os.path.join(outdir, "pca_pairplot_no_outliers.html"),
+            pcs=pcs,
+            color_cols=inlier_color,
+            hover_cols=hover_cols,
+            title=f"PCA Pairplot [{matrix_key}] (outliers removed)",
+            color_styles=color_styles,
+            default_color_col=hue2,
+            corner=bool(getattr(args, "pairplot_corner", False)),
+            pc_label_map=pairplot_pc_label_map,
+            args=args,
+        )
         write_pairplot_png(
             scores=np.asarray(sample_coords[inlier_mask, :], dtype=np.float32),
             manifest=manifest_no_outlier,
             out_png=os.path.join(outdir, "pca_pairplot_no_outliers.png"),
             pcs=pcs,
             hue=hue2,
+            color_styles=color_styles,
             diag_kind=getattr(args, "pairplot_diag_kind", "kde"),
             corner=bool(getattr(args, "pairplot_corner", False)),
             pc_label_map=pairplot_pc_label_map,
@@ -1103,15 +1543,66 @@ def pca_main(args):
     )
     logger.info(f"Matrix shape used: {ctx.source.shape} (n_cpgs x n_samples)")
 
+    cpg_bed = getattr(args, "cpg_bed", None)
+    cpg_bed_agg = bool(getattr(args, "cpg_bed_agg", False))
+
+    if cpg_bed_agg:
+        if not cpg_bed:
+            raise ValueError("--cpg-bed-agg requires --cpg-bed to be specified.")
+        if ctx.mode == "legacy_npy":
+            raise ValueError("--cpg-bed-agg requires a cohort store (.mmdb); legacy .npy folders have no position info.")
+
+    # --- Region-average aggregation mode ---
+    agg_source = None
+    region_avg_tsv = None
+    if cpg_bed_agg:
+        region_matrix, regions_df_agg, n_cpgs_per_region = compute_region_avg_matrix(
+            ctx.source,
+            cpg_bed,
+            input_path,
+            batch_rows=args.batch_rows,
+            logger=logger,
+        )
+        # Write region × sample TSV
+        region_avg_tsv = os.path.join(outdir, "region_avg.tsv")
+        sample_df = pd.DataFrame(region_matrix, columns=ctx.sample_ids)
+        region_out = pd.concat([regions_df_agg, pd.Series(n_cpgs_per_region, name="n_cpgs"), sample_df], axis=1)
+        region_out.to_csv(region_avg_tsv, sep="\t", index=False)
+        logger.info(f"Wrote region avg methylation TSV ({len(regions_df_agg):,} regions): {region_avg_tsv}")
+
+        agg_source = _ArrayMatrixSource(region_matrix)
+        active_source = agg_source
+        fit_frac_cpgs = 1.0
+        fit_preselected = None
+        fit_n_pcs = max(1, min(int(args.n_pcs), int(agg_source.shape[0]), int(agg_source.shape[1])))
+        feature_label = f"region_avg:{os.path.basename(cpg_bed)}"
+    else:
+        # --- Normal CpG-level mode (with optional BED filter) ---
+        preselected_rows = None
+        if cpg_bed:
+            if ctx.mode == "legacy_npy":
+                raise ValueError("--cpg-bed requires a cohort store (.mmdb) input; legacy .npy folders have no position info.")
+            logger.info(f"CpG BED filter: {cpg_bed}")
+            preselected_rows = cpg_rows_from_bed(input_path, cpg_bed)
+            logger.info(f"CpG BED filter: {len(preselected_rows)} of {ctx.source.shape[0]} rows selected")
+            if len(preselected_rows) == 0:
+                raise ValueError(f"No CpGs in the cohort index overlap any region in --cpg-bed {cpg_bed}")
+        active_source = ctx.source
+        fit_frac_cpgs = args.frac_cpgs
+        fit_preselected = preselected_rows
+        fit_n_pcs = args.n_pcs
+        feature_label = ctx.matrix_key
+
     try:
         sample_coords, ipca, row_idx, obs_count = fit_ipca_sample_coords(
-            ctx.source,
-            n_components=args.n_pcs,
-            frac_cpgs=args.frac_cpgs,
+            active_source,
+            n_components=fit_n_pcs,
+            frac_cpgs=fit_frac_cpgs,
             min_frac_present=args.min_frac_present,
             batch_rows=args.batch_rows,
             seed=args.seed,
             logger=logger,
+            preselected_rows=fit_preselected,
         )
 
         out = pd.DataFrame({"id": ctx.sample_ids, "path": ctx.sample_paths})
@@ -1121,7 +1612,7 @@ def pca_main(args):
         out["matrix_key"] = ctx.matrix_key
         out["matrix_path"] = ctx.matrix_path
         out["n_obs_cpgs_for_fit"] = obs_count
-        for i in range(args.n_pcs):
+        for i in range(fit_n_pcs):
             out[f"PC{i+1}"] = sample_coords[:, i]
 
         did_umap = False
@@ -1161,11 +1652,13 @@ def pca_main(args):
                 input_store_kind=ctx.store_kind,
                 selected_matrix_key=ctx.matrix_key,
                 selected_matrix_path=ctx.matrix_path,
-                used_shape=tuple(ctx.source.shape),
+                used_shape=tuple(active_source.shape),
                 raw_shape=ctx.raw_shape,
                 n_samples=int(len(ctx.sample_ids)),
                 n_cpgs_used_for_fit=int(len(row_idx)),
                 pca_semantics="IPCA on (n_cpgs x n_samples); PCs are sample coordinates",
+                cpg_bed_agg=bool(cpg_bed_agg),
+                region_avg_tsv=region_avg_tsv,
                 explained_variance_ratio=getattr(ipca, "explained_variance_ratio_", None).tolist()
                 if getattr(ipca, "explained_variance_ratio_", None) is not None
                 else None,
@@ -1177,7 +1670,7 @@ def pca_main(args):
         with open(os.path.join(outdir, "params.json"), "w") as f:
             json.dump(params, f, indent=2)
 
-        color_cols, hover_cols = plotly_color_options(meta, out, args.n_pcs, did_umap)
+        color_cols, hover_cols = plotly_color_options(meta, out, fit_n_pcs, did_umap)
         color_styles = build_color_styles(out, color_cols)
         evr = getattr(ipca, "explained_variance_ratio_", None)
         if evr is not None and len(evr) >= 2:
@@ -1200,7 +1693,7 @@ def pca_main(args):
             y="PC2",
             color_cols=color_cols,
             hover_cols=hover_cols,
-            title=f"PCA sample coords (PC1 vs PC2) [{ctx.matrix_key}]",
+            title=f"PCA sample coords (PC1 vs PC2) [{feature_label}]",
             color_styles=color_styles,
             out_html=os.path.join(outdir, "pca.html"),
             args=args,
@@ -1218,7 +1711,7 @@ def pca_main(args):
                 y="UMAP2",
                 color_cols=color_cols,
                 hover_cols=hover_cols,
-                title=f"UMAP (on PCA coords) [{ctx.matrix_key}]",
+                title=f"UMAP (on PCA coords) [{feature_label}]",
                 color_styles=color_styles,
                 out_html=os.path.join(outdir, "umap.html"),
                 args=args,
@@ -1233,17 +1726,32 @@ def pca_main(args):
         n_pair = args.pairplot_pcs_n
         pcs = tuple(f"PC{i}" for i in range(1, n_pair + 1))
         hue = pick_pairplot_hue(out, meta, args)
-        manifest_for_pairplot = out.drop(columns=[f"PC{i+1}" for i in range(args.n_pcs)], errors="ignore")
+        manifest_for_pairplot = out.drop(columns=[f"PC{i+1}" for i in range(fit_n_pcs)], errors="ignore")
+        write_pairplot_with_styles(
+            scores=sample_coords,
+            manifest=manifest_for_pairplot,
+            out_html=os.path.join(outdir, "pca_pairplot.html"),
+            pcs=pcs,
+            color_cols=color_cols,
+            hover_cols=hover_cols,
+            title=f"PCA Pairplot [{feature_label}]",
+            color_styles=color_styles,
+            default_color_col=hue,
+            corner=bool(getattr(args, "pairplot_corner", False)),
+            pc_label_map=pairplot_pc_label_map,
+            args=args,
+        )
         write_pairplot_png(
             scores=sample_coords,
             manifest=manifest_for_pairplot,
             out_png=os.path.join(outdir, "pca_pairplot.png"),
             pcs=pcs,
             hue=hue,
+            color_styles=color_styles,
             diag_kind=getattr(args, "pairplot_diag_kind", "kde"),
             corner=bool(getattr(args, "pairplot_corner", False)),
             pc_label_map=pairplot_pc_label_map,
-            title=f"PCA Pairplot [{ctx.matrix_key}]",
+            title=f"PCA Pairplot [{feature_label}]",
         )
 
         if outlier_enabled:
@@ -1256,7 +1764,7 @@ def pca_main(args):
                 hue=hue,
                 args=args,
                 outdir=outdir,
-                matrix_key=ctx.matrix_key,
+                matrix_key=feature_label,
                 x_axis_label=x_axis_label,
                 y_axis_label=y_axis_label,
                 pairplot_pc_label_map=pairplot_pc_label_map,
@@ -1264,6 +1772,8 @@ def pca_main(args):
                 png_ok=png_ok,
             )
     finally:
+        if agg_source is not None:
+            agg_source.close()
         ctx.source.close()
 
     logger.info(f"==== Done in {time.time() - t0:.2f}s ====")

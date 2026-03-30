@@ -23,6 +23,9 @@ def main(argv=None):
     elif args.command == "pca":
         from mdb.pca import pca_main
         pca_main(args)
+    elif args.command == "asmpca":
+        from mdb.asmpca import asmpca_main
+        asmpca_main(args)
     elif args.command == "query":
         from mdb.query import query_main
         query_main(args)
