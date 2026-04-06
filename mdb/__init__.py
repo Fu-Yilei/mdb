@@ -7,4 +7,16 @@ def asmpca(*args, **kwargs):
     return _asmpca(*args, **kwargs)
 
 
-__all__ = ["__version__", "asmpca"]
+def stats(*args, **kwargs):
+    from mdb.stats import stats as _stats
+
+    return _stats(*args, **kwargs)
+
+
+def viz(*args, **kwargs):
+    from mdb.viz import viz as _viz
+
+    return _viz(*args, **kwargs)
+
+
+__all__ = ["__version__", "asmpca", "stats", "viz"]

@@ -610,6 +610,8 @@ def maybe_merge_metadata(out: pd.DataFrame, metadata_path: str | None, logger=No
         return out, None
 
     meta = pd.read_csv(metadata_path, sep=None, engine="python")
+    if "id" not in meta.columns and "sample_id" in meta.columns:
+        meta = meta.rename(columns={"sample_id": "id"})
 
     if "id" in meta.columns:
         out2 = out.copy()

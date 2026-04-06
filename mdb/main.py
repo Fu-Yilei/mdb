@@ -23,6 +23,12 @@ def main(argv=None):
     elif args.command == "pca":
         from mdb.pca import pca_main
         pca_main(args)
+    elif args.command == "stats":
+        from mdb.stats import stats_main
+        stats_main(args)
+    elif args.command == "viz":
+        from mdb.viz import viz_main
+        viz_main(args)
     elif args.command == "asmpca":
         from mdb.asmpca import asmpca_main
         asmpca_main(args)

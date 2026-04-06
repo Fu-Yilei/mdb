@@ -149,6 +149,80 @@ def parse_args(argv):
     )
     pca_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
 
+    stats_parser = subparsers.add_parser("stats", help="Summarize observed CpG counts across cohort views")
+    stats_parser.add_argument("-i", "--input", required=True, help="Input merged cohort store (.mmdb)")
+    stats_parser.add_argument("-o", "--outdir", required=True, help="Output directory for stats results")
+    stats_parser.add_argument(
+        "-m",
+        "--metadata",
+        help="Metadata TSV/CSV with sample_id or id column for stratified summaries and plot coloring",
+    )
+    stats_parser.add_argument(
+        "--assay",
+        default="all",
+        help="Assay selector: exact value, comma-separated list, or all; default=all",
+    )
+    stats_parser.add_argument(
+        "--haplotype",
+        default="all",
+        help="Haplotype selector: exact value, comma-separated list, or all; default=all",
+    )
+    stats_parser.add_argument(
+        "--strand",
+        default="all",
+        help="Strand selector: exact value, comma-separated list, or all; default=all",
+    )
+    stats_parser.add_argument(
+        "--batch_rows",
+        type=int,
+        default=65536,
+        help="Rows per block for fallback cohort scans, default=65,536",
+    )
+    stats_parser.add_argument(
+        "--plot_style",
+        choices=("studio", "sunrise", "paper"),
+        default="studio",
+        help="Plot style preset for HTML plots, default=studio",
+    )
+    stats_parser.add_argument(
+        "--plot_style_variants",
+        action="store_true",
+        help="Write additional style-variant HTML files for visual comparison",
+    )
+    stats_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
+
+    viz_parser = subparsers.add_parser("viz", help="Build interactive binned methylation profile HTML from sample bundles or a cohort store")
+    viz_parser.add_argument(
+        "-i",
+        "--inputs",
+        nargs="+",
+        required=True,
+        help="Input sample bundles, a directory containing .smdb bundles, globs, a .txt manifest, or one cohort store (.mmdb)",
+    )
+    viz_parser.add_argument("-o", "--outdir", required=True, help="Output directory for HTML and binned profile artifacts")
+    viz_parser.add_argument(
+        "-m",
+        "--metadata",
+        "--manifest",
+        dest="metadata",
+        help="Metadata TSV/CSV for grouping and sample annotations (for example tissue_name or tissue_broad)",
+    )
+    viz_parser.add_argument(
+        "--assay",
+        default="5mC,5hmC",
+        help="Assay selector: exact value, comma-separated list, or all; default=5mC,5hmC",
+    )
+    viz_parser.add_argument("--haplotype", default="combined", help="Track haplotype selector, default=combined")
+    viz_parser.add_argument("--strand", default="combined", help="Track strand selector, default=combined")
+    viz_parser.add_argument(
+        "--bin-length",
+        type=int,
+        required=True,
+        help="Required genomic bin length in bases for profile aggregation (for example 100000)",
+    )
+    viz_parser.add_argument("-w", "--workers", type=int, default=1, help="Parallel sample workers for bundle aggregation, default=1")
+    viz_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
+
     asmpca_parser = subparsers.add_parser("asmpca", help="PCA on ONT ASM segment BEDs using DMR regions")
     asmpca_parser.add_argument(
         "-i",

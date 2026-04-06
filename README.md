@@ -168,6 +168,47 @@ When `--outlier_detect` is enabled, `pca` also writes:
 
 When `--plot_style_variants` is enabled, extra style comparison HTML files are written (for example `pca_studio.html`, `pca_sunrise.html`, `pca_paper.html` depending on selected primary style).
 
+### 7) Summarize cohort stats
+
+```bash
+mdb stats \
+  -i cohort.mmdb \
+  -o cohort_stats \
+  -m metadata.tsv \
+  --assay all \
+  --haplotype all \
+  --strand all \
+  --plot_style studio
+```
+
+`stats` writes:
+
+- `sample_stats.tsv`: one row per sample per cohort track with observed CpG counts and fractions.
+- `track_stats.tsv`: per-track summary across assay / haplotype / strand subclasses.
+- `metadata_group_stats.tsv`: per-track grouped summaries for plotted metadata columns.
+- `cpg_count_scatter.html`: interactive sample-rank scatter with PCA-style color dropdown.
+- `cpg_count_by_track.html`: interactive box/point plot of observed CpGs stratified by metadata across tracks.
+
+### 8) Build binned methylation profile HTML
+
+```bash
+mdb viz \
+  -i /path/to/cohort.mmdb \
+  -o cohort_viz \
+  -m metadata.tsv \
+  --assay 5mC,5hmC \
+  --haplotype combined \
+  --strand combined \
+  --bin-length 100000
+```
+
+`viz` also accepts a directory of `.smdb` bundles, bundle globs, or a `.txt` manifest of bundle paths. It writes:
+
+- `methylation_viz.html`: interactive heatmap HTML for switching tracks, chromosomes, metadata-group rows, and selected sample rows.
+- `binned_profiles.npz`: compressed sample-by-bin matrices for each selected track.
+- `sample_metadata_aligned.tsv`: aligned metadata used by the HTML.
+- `tissue_name_group_profiles.tsv.gz`: precomputed tissue-level mean profiles when `tissue_name` metadata is available.
+
 ## Important Notes
 
 - `create --reader` currently defaults to `scan` and the active create path uses scan-based reading.
