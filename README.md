@@ -209,6 +209,36 @@ mdb viz \
 - `sample_metadata_aligned.tsv`: aligned metadata used by the HTML.
 - `tissue_name_group_profiles.tsv.gz`: precomputed tissue-level mean profiles when `tissue_name` metadata is available.
 
+### 9) Plot a locus-focused methylation profile from a cohort
+
+```bash
+mdb plot \
+  -i cohort.mmdb \
+  -o locus_plot \
+  -r chr15:80150000-80200000 \
+  -m metadata.tsv \
+  --sample-id sampleA,sampleB \
+  --assay 5mC,5hmC \
+  --combine-tracks sum \
+  --window-size 20 \
+  --color-by tissue_name
+```
+
+`plot` is separate from `viz`: it focuses on one genomic interval from a cohort store and writes an interactive line-profile HTML with controls for:
+
+- selected track view(s) within the requested assay / haplotype / strand filters
+- sample-line mode or grouped-mean mode using the chosen metadata color field
+- browser-side sliding-window smoothing
+- metadata-driven recoloring when aligned metadata is provided
+
+It writes:
+
+- `methylation_plot.html`: interactive locus-focused profile viewer with track, color, grouping, and window controls.
+- `region_profiles.npz`: compressed CpG-level matrices for the plotted region and selected tracks.
+- `smoothed_profiles.tsv.gz`: smoothed profile coordinates and values using the initial command-line window size.
+- `sample_metadata_aligned.tsv`: aligned metadata used by the HTML controls.
+- `plot_manifest.json`: run parameters and output paths.
+
 ## Important Notes
 
 - `create --reader` currently defaults to `scan` and the active create path uses scan-based reading.

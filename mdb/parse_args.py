@@ -223,6 +223,69 @@ def parse_args(argv):
     viz_parser.add_argument("-w", "--workers", type=int, default=1, help="Parallel sample workers for bundle aggregation, default=1")
     viz_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
 
+    plot_parser = subparsers.add_parser("plot", help="Plot locus-focused methylation profiles from a cohort store (.mmdb)")
+    plot_parser.add_argument("-i", "--input", required=True, help="Input cohort store (.mmdb)")
+    plot_parser.add_argument("-o", "--outdir", required=True, help="Output directory for plot HTML and profile artifacts")
+    plot_parser.add_argument(
+        "-r",
+        "--region",
+        required=True,
+        help="Genomic interval as chrom:start-end using 0-based inclusive coordinates",
+    )
+    plot_parser.add_argument(
+        "-m",
+        "--metadata",
+        "--manifest",
+        dest="metadata",
+        help="Metadata TSV/CSV for sample coloring and grouping controls",
+    )
+    plot_parser.add_argument(
+        "-s",
+        "--sample-id",
+        action="append",
+        help="Sample id(s) to plot; repeat or use comma-separated values, default=all samples shared by the selected tracks",
+    )
+    plot_parser.add_argument(
+        "--sample-file",
+        help="Optional text file with one sample id per line",
+    )
+    plot_parser.add_argument(
+        "--assay",
+        default="5mC,5hmC",
+        help="Assay selector: exact value, comma-separated list, or all; default=5mC,5hmC",
+    )
+    plot_parser.add_argument("--haplotype", default="combined", help="Track haplotype selector, default=combined")
+    plot_parser.add_argument("--strand", default="combined", help="Track strand selector, default=combined")
+    plot_parser.add_argument(
+        "--combine-tracks",
+        choices=("none", "sum", "mean"),
+        default="none",
+        help="Add a synthetic combined profile across the selected tracks; sum is useful for 5mC+5hmC, default=none",
+    )
+    plot_parser.add_argument(
+        "--window-size",
+        type=int,
+        default=20,
+        help="Initial sliding-window size in CpG points for smoothing, default=20",
+    )
+    plot_parser.add_argument(
+        "--min-points-for-smooth",
+        type=int,
+        default=3,
+        help="Minimum observed CpGs required before smoothing is applied, default=3",
+    )
+    plot_parser.add_argument(
+        "--color-by",
+        help="Initial metadata column used for coloring/grouped rendering in the HTML; default=auto",
+    )
+    plot_parser.add_argument(
+        "--plot_style",
+        choices=("studio", "sunrise", "paper"),
+        default="studio",
+        help="Visual style preset for the HTML report, default=studio",
+    )
+    plot_parser.add_argument("--verbose", action="store_true", help="More stderr logging (DEBUG)")
+
     asmpca_parser = subparsers.add_parser("asmpca", help="PCA on ONT ASM segment BEDs using DMR regions")
     asmpca_parser.add_argument(
         "-i",
@@ -317,6 +380,77 @@ def parse_args(argv):
     query_target = query_parser.add_mutually_exclusive_group(required=True)
     query_target.add_argument("-l", "--locus", help="Genomic locus as chrom:pos0")
     query_target.add_argument("-r", "--region", help="Genomic interval as chrom:start-end using 0-based inclusive coordinates")
+
+    strand_parser = subparsers.add_parser(
+        "strand",
+        help="Detect strand-biased DNA methylation hotspot loci in a cohort store",
+    )
+    strand_parser.add_argument(
+        "-i", "--input", required=True,
+        help="Input cohort store (.mmdb) with paired plus/minus strand views",
+    )
+    strand_parser.add_argument(
+        "-o", "--outdir", required=True,
+        help="Output directory",
+    )
+    strand_parser.add_argument(
+        "-m", "--metadata",
+        help="Metadata TSV/CSV with an 'id' column matching sample IDs",
+    )
+    strand_parser.add_argument(
+        "--group-by", dest="group_by",
+        help="Metadata column for per-category hotspot calling (e.g. tissue_broad); requires --metadata",
+    )
+    strand_parser.add_argument(
+        "--assay", default="5hmC",
+        help="Assay to use for hotspot detection, default=5hmC",
+    )
+    strand_parser.add_argument(
+        "--haplotype", default="combined",
+        help="Haplotype track to use, default=combined",
+    )
+    strand_parser.add_argument(
+        "--min-paired-frac", dest="min_paired_frac", type=float, default=0.8,
+        help="Min fraction of samples in a category that must have both strands "
+             "covered at a CpG for it to be eligible as a hotspot candidate, default=0.8",
+    )
+    strand_parser.add_argument(
+        "--min-mean-total", dest="min_mean_total", type=float, default=0.005,
+        help="Min mean total methylation (plus+minus)/2 at a CpG to be eligible, default=0.005",
+    )
+    strand_parser.add_argument(
+        "--cluster-gap-bp", dest="cluster_gap_bp", type=int, default=1_000,
+        help="Max gap in bp between adjacent CpGs in the same hotspot cluster, default=1000",
+    )
+    strand_parser.add_argument(
+        "--min-cluster-cpgs", dest="min_cluster_cpgs", type=int, default=1,
+        help="Minimum number of CpGs required for a hotspot cluster to be reported, default=1",
+    )
+    strand_parser.add_argument(
+        "--top-n-hotspots", dest="top_n_hotspots", type=int, default=500,
+        help="Maximum hotspot clusters to report per category, default=500",
+    )
+    strand_parser.add_argument(
+        "--batch-rows", dest="batch_rows", type=int, default=65_536,
+        help="CpG rows per streaming block, default=65536",
+    )
+    strand_parser.add_argument(
+        "--workers", type=int, default=1,
+        help="Parallel genome-chunk workers (ProcessPoolExecutor), default=1",
+    )
+    strand_parser.add_argument(
+        "--plot-style", dest="plot_style",
+        choices=("studio", "sunrise", "paper"), default="studio",
+        help="Plot style preset for HTML output, default=studio",
+    )
+    strand_parser.add_argument(
+        "--plot-style-variants", dest="plot_style_variants", action="store_true",
+        help="Also write HTML files for all other style variants",
+    )
+    strand_parser.add_argument(
+        "--verbose", action="store_true",
+        help="Enable DEBUG-level logging to stderr",
+    )
 
     if len(argv) == 0:
         parser.print_help(sys.stderr)

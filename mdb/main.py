@@ -29,12 +29,18 @@ def main(argv=None):
     elif args.command == "viz":
         from mdb.viz import viz_main
         viz_main(args)
+    elif args.command == "plot":
+        from mdb.plot import plot_main
+        plot_main(args)
     elif args.command == "asmpca":
         from mdb.asmpca import asmpca_main
         asmpca_main(args)
     elif args.command == "query":
         from mdb.query import query_main
         query_main(args)
+    elif args.command == "strand":
+        from mdb.strand import strand_main
+        strand_main(args)
     return 0
 
 

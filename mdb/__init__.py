@@ -19,4 +19,10 @@ def viz(*args, **kwargs):
     return _viz(*args, **kwargs)
 
 
-__all__ = ["__version__", "asmpca", "stats", "viz"]
+def plot(*args, **kwargs):
+    from mdb.plot import plot as _plot
+
+    return _plot(*args, **kwargs)
+
+
+__all__ = ["__version__", "asmpca", "stats", "viz", "plot"]
