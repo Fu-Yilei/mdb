@@ -118,7 +118,8 @@ def map_positions_to_rows(
     s, e = chrom_slices[chrom]
     chrom_pos = pos0[s:e]  # sorted increasing within chrom
     j = np.searchsorted(chrom_pos, starts_np, side="left")
-    ok = (j < chrom_pos.shape[0]) & (chrom_pos[j] == starts_np)
+    j_safe = np.clip(j, 0, chrom_pos.shape[0] - 1)
+    ok = (j < chrom_pos.shape[0]) & (chrom_pos[j_safe] == starts_np)
 
     out = np.full(starts_np.shape[0], -1, dtype=np.int64)
     out[ok] = (s + j[ok]).astype(np.int64)
