@@ -32,27 +32,37 @@ def discover_ont_beds(path: str) -> Dict[str, str]:
     if os.path.isfile(path):
         return {"combined": path}
 
-    if not os.path.isdir(path):
-        raise FileNotFoundError(f"ONT input is neither file nor directory: {path}")
+    if os.path.isdir(path):
+        cand = {
+            "combined": os.path.join(path, "combined.bed.gz"),
+            "hp1": os.path.join(path, "hp1.bed.gz"),
+            "hp2": os.path.join(path, "hp2.bed.gz"),
+        }
+        found = {k: v for k, v in cand.items() if os.path.exists(v)}
 
-    cand = {
-        "combined": os.path.join(path, "combined.bed.gz"),
-        "hp1": os.path.join(path, "hp1.bed.gz"),
-        "hp2": os.path.join(path, "hp2.bed.gz"),
+        # optionally also accept .bed (uncompressed)
+        for k in list(cand.keys()):
+            if k not in found:
+                v2 = os.path.join(path, f"{k}.bed") if k != "combined" else os.path.join(path, "combined.bed")
+                if os.path.exists(v2):
+                    found[k] = v2
+        if not found:
+            raise FileNotFoundError(
+                f"No ONT beds found in {path}. Expected any of: hp1.bed(.gz), hp2.bed(.gz), combined.bed(.gz)"
+            )
+        return found
+
+    # Prefix mode: {path}.combined.bed.gz / .hap1.bed.gz / .hap2.bed.gz
+    prefix_cand = {
+        "combined": f"{path}.combined.bed.gz",
+        "hp1":      f"{path}.hap1.bed.gz",
+        "hp2":      f"{path}.hap2.bed.gz",
     }
-    found = {k: v for k, v in cand.items() if os.path.exists(v)}
+    found = {k: v for k, v in prefix_cand.items() if os.path.exists(v)}
+    if found:
+        return found
 
-    # optionally also accept .bed (uncompressed)
-    for k in list(cand.keys()):
-        if k not in found:
-            v2 = os.path.join(path, f"{k}.bed") if k != "combined" else os.path.join(path, "combined.bed")
-            if os.path.exists(v2):
-                found[k] = v2
-    if not found:
-        raise FileNotFoundError(
-            f"No ONT beds found in {path}. Expected any of: hp1.bed(.gz), hp2.bed(.gz), combined.bed(.gz)"
-        )
-    return found
+    raise FileNotFoundError(f"ONT input is neither file, directory, nor valid prefix: {path}")
 
 
 def map_positions_to_rows(

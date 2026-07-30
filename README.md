@@ -4,12 +4,21 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/methdb?logo=python&logoColor=white)](https://pypi.org/project/methdb/)
 [![License](https://img.shields.io/github/license/Fu-Yilei/mdb)](LICENSE)
 
-`mdb` builds and queries CpG-by-sample methylation matrices from ONT and PacBio BED inputs.
+`mdb` builds, merges, queries, and analyzes CpG-by-sample methylation matrices
+from ONT and PacBio BED inputs. It also provides cohort PCA/UMAP, summary
+statistics, interactive methylation visualization, ONT ASM PCA, and
+strand-bias hotspot detection.
 
 - PyPI package: `methdb`
 - CLI command: `mdb`
 
 ## Install
+
+```bash
+pip install methdb
+```
+
+To install from a local checkout instead:
 
 ```bash
 pip install .
@@ -46,7 +55,7 @@ mdb index -r GRCh38_no_alt.fa -o GRCh38.cpg_index.npz --sex
 
 ### 2) Create sample bundle
 
-ONT (modkit output file or directory):
+ONT (modkit output file, directory, or prefix):
 
 ```bash
 mdb create \
@@ -58,7 +67,18 @@ mdb create \
   --sample-id SAMPLE_ONT
 ```
 
-PacBio (prefix or directory):
+Accepted ONT layouts are:
+
+- a BED/BED.GZ file, treated as the `combined` track;
+- a directory containing any of `combined.bed(.gz)`, `hp1.bed(.gz)`, or
+  `hp2.bed(.gz)`; or
+- a prefix resolving to `<prefix>.combined.bed.gz`,
+  `<prefix>.hap1.bed.gz`, and/or `<prefix>.hap2.bed.gz`.
+
+When a modkit BED contains both `+` and `-` records, `mdb create`
+automatically builds separate strand tracks.
+
+PacBio (prefix or a specific BED file):
 
 ```bash
 mdb create \
@@ -69,6 +89,12 @@ mdb create \
   -c 5 \
   --sample-id SAMPLE_PB
 ```
+
+A PacBio prefix resolves to `<prefix>.combined.bed(.gz)`,
+`<prefix>.hap1.bed(.gz)`, and `<prefix>.hap2.bed(.gz)`. Pointing directly to
+a BED/BED.GZ file creates a `combined` track. Prefix or direct-file input is
+recommended. Do not rely on PacBio directory discovery in the current
+implementation; pass the prefix or a specific BED path instead.
 
 ### 3) Merge sample bundles into a cohort
 
@@ -162,11 +188,50 @@ When `--outlier_detect` is enabled, `pca` also writes:
 - `outliers_only.tsv` (flagged samples),
 - `pca_with_outliers_marked.html`,
 - `pca_no_outliers.html`,
-- `pca_pairplot.html`,
 - `pca_pairplot_no_outliers.html`,
 - `pca_pairplot_no_outliers.png`.
 
+The no-outlier plots require at least one inlier, and the no-outlier pairplot
+requires at least two. Plotly PNG exports are written only when a compatible
+image engine is available.
+
 When `--plot_style_variants` is enabled, extra style comparison HTML files are written (for example `pca_studio.html`, `pca_sunrise.html`, `pca_paper.html` depending on selected primary style).
+
+Standard PCA outputs include:
+
+- `embedding.tsv`,
+- `params.json`,
+- `pca_umap.log`,
+- `pca.html`,
+- `pca_pairplot.html`,
+- `pca_pairplot.png`.
+
+Add `-m metadata.tsv` to make aligned metadata columns available for plot
+coloring. Add `--umap` to calculate a UMAP embedding and write `umap.html`.
+
+Restrict PCA to CpGs overlapping BED intervals:
+
+```bash
+mdb pca \
+  -i cohort.mmdb \
+  -o cohort_pca_regions \
+  --cpg-bed regions.bed
+```
+
+Alternatively, average all CpGs within each BED interval and run PCA on the
+resulting region-by-sample matrix:
+
+```bash
+mdb pca \
+  -i cohort.mmdb \
+  -o cohort_pca_region_means \
+  --cpg-bed regions.bed \
+  --cpg-bed-agg
+```
+
+The aggregation mode also writes `region_avg.tsv`. Both BED modes require a
+current cohort store (`.mmdb`) because legacy flat NPY folders do not contain
+genomic positions.
 
 ### 7) Summarize cohort stats
 
@@ -187,7 +252,14 @@ mdb stats \
 - `track_stats.tsv`: per-track summary across assay / haplotype / strand subclasses.
 - `metadata_group_stats.tsv`: per-track grouped summaries for plotted metadata columns.
 - `cpg_count_scatter.html`: interactive sample-rank scatter with PCA-style color dropdown.
+- `frac_cpg_scatter.html`: corresponding sample-rank scatter for the observed CpG fraction.
 - `cpg_count_by_track.html`: interactive box/point plot of observed CpGs stratified by metadata across tracks.
+- `frac_cpg_by_track.html`: corresponding box/point plot for the observed CpG fraction.
+- `params.json` and `stats.log`: run parameters and detailed logging.
+
+`metadata_group_stats.tsv` is written only when the aligned metadata provides
+usable grouping columns. PNG versions of the plots are written when Plotly PNG
+export is available.
 
 ### 8) Build binned methylation profile HTML
 
@@ -208,6 +280,8 @@ mdb viz \
 - `binned_profiles.npz`: compressed sample-by-bin matrices for each selected track.
 - `sample_metadata_aligned.tsv`: aligned metadata used by the HTML.
 - `tissue_name_group_profiles.tsv.gz`: precomputed tissue-level mean profiles when `tissue_name` metadata is available.
+- `viz_manifest.json`: run parameters, resolved inputs, selected tracks, and output paths.
+- `viz.log`: detailed run log.
 
 ### 9) Plot a locus-focused methylation profile from a cohort
 
@@ -238,10 +312,77 @@ It writes:
 - `smoothed_profiles.tsv.gz`: smoothed profile coordinates and values using the initial command-line window size.
 - `sample_metadata_aligned.tsv`: aligned metadata used by the HTML controls.
 - `plot_manifest.json`: run parameters and output paths.
+- `plot.log`: detailed run log.
+
+### 10) Run PCA on ONT ASM segments
+
+`asmpca` expects modkit DMR segment BEDs containing fields such as `name`,
+`effect_size`, and `cohen_h`:
+
+```bash
+mdb asmpca \
+  -i sample1.segments.bed.gz sample2.segments.bed.gz \
+  -o asm_pca \
+  -m metadata.tsv \
+  --feature-mode dmr_location \
+  --min-region-samples 2 \
+  --n-pcs 10
+```
+
+Inputs may be BED paths, directories, globs, or a text manifest of paths. By
+default, cohort DMR regions are the merged union of input rows whose
+`name` is `different`. Supply `--dmr-regions regions.bed` to use an external
+region set.
+
+The default `dmr_location` mode uses binary DMR presence as the PCA features.
+To project a segment statistic onto the regions instead:
+
+```bash
+mdb asmpca \
+  -i asm_segments/*.bed.gz \
+  -o asm_metric_pca \
+  --feature-mode segment_metric \
+  --metric effect_size
+```
+
+Core outputs are `embedding.tsv`, `dmr_regions_used.bed`, `params.json`,
+`pca.html`, `pca_pairplot.html`, `pca_pairplot.png`, and `pca_umap.log`.
+
+### 11) Detect strand-biased methylation hotspots
+
+`strand` requires a cohort store containing matching `plus` and `minus` views
+for the requested assay and haplotype:
+
+```bash
+mdb strand \
+  -i cohort.mmdb \
+  -o strand_hotspots \
+  -m metadata.tsv \
+  --group-by tissue_broad \
+  --assay 5hmC \
+  --haplotype combined \
+  --min-paired-frac 0.8 \
+  --min-mean-total 0.005 \
+  --cluster-gap-bp 1000 \
+  --top-n-hotspots 500 \
+  --workers 4
+```
+
+The command scores strand imbalance genome-wide, clusters adjacent
+same-direction CpGs, and optionally repeats hotspot calling within metadata
+groups. Core outputs include:
+
+- `per_sample_metrics.tsv.gz`,
+- `hotspots_global.tsv` and `hotspots_global.bed`,
+- `hotspot_sample_profiles.tsv.gz` when hotspot profiles are available,
+- per-group hotspot TSV/BED and summary files when `--group-by` is used,
+- interactive strand-bias and hotspot HTML reports,
+- `params.json` and `strand.log`.
 
 ## Important Notes
 
 - `create --reader` currently defaults to `scan` and the active create path uses scan-based reading.
+- `create --workers` is currently accepted by the CLI but is not used by the active scan-based create path.
 - `merge` and `append` require sample bundles created by current `mdb create` (manifest-based `.smdb` layout).
 - `pca` now supports both current cohort stores (`.mmdb`) and legacy flat merged `.npy` folders.
 - PCA color categories are sorted before plotting so colors stay stable across full vs no-outlier comparisons.
