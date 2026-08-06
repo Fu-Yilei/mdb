@@ -177,17 +177,17 @@ CpGs remain available exclusively through their original source-cohort views.
 The grouped output is marked with `"representation": "cpg_groups"` in
 `manifest.json`.
 
-Use the exact Loyfer atlas-block index consumed by `sniffcell find`:
+Use the packaged Loyfer atlas-block index:
 
 ```bash
 mdb group -i cohort.mmdb -o cohort.loyfer.mmdb --grouping loyfer
 ```
 
 This loads the packaged, versioned `loyfer_grch38_v1.npz` index containing
-7,990,609 blocks from the exact atlas index used by `sniffcell find`. Loyfer
-intervals are G-anchored, so the stored metadata fixes a one-base left shift
-when mapping them onto the C-anchored `.mmdb` CpG index. This is the block
-representation from the [Loyfer methylation atlas](https://www.nature.com/articles/s41586-022-05580-6).
+7,990,609 atlas blocks. Loyfer intervals are G-anchored, so the stored metadata
+fixes a one-base left shift when mapping them onto the C-anchored `.mmdb` CpG
+index. This is the block representation from the
+[Loyfer methylation atlas](https://www.nature.com/articles/s41586-022-05580-6).
 
 Use the DECODE/Nanopolish definition, which joins adjacent CpGs separated by at
 most 10 bp:
