@@ -12,8 +12,10 @@ from mdb.merge import append_main, merge_main
 from mdb.schema import TrackKey
 from mdb.storage import (
     available_views,
+    load_cohort_index,
     load_cohort_manifest,
     load_view_columns,
+    load_view_reader,
     load_view_uint16_matrix,
     query_cohort_point,
     query_cohort_range,
@@ -227,6 +229,61 @@ def test_append_zarr_adds_columns(tmp_path: Path):
     point = query_cohort_point(str(cohort_zarr), key, "pb_a", "chr1", 1)
     assert point is not None
     assert point["value_percent"] == 76.0
+
+
+def test_append_zarr_resizes_chromosome_when_new_sample_has_no_values(tmp_path: Path):
+    import zarr
+
+    ws = _workspace(tmp_path)
+    ont_bundle = ws["tmp"] / "sample_ont.smdb"
+    create_bundle(ws["index"], "ont", ws["ont_dir"], ont_bundle, "ont_a")
+    cohort = ws["tmp"] / "cohort_append_missing_chrom_zarr.mmdb"
+    merge_bundles([ont_bundle], cohort, backend="zarr")
+
+    chr1_only = ws["tmp"] / "append_chr1_only"
+    write_gzip_text(chr1_only / "combined.bed.gz", ont_line("chr1", 1, "m", 10, 60.0))
+    chr1_bundle = ws["tmp"] / "append_chr1_only.smdb"
+    create_bundle(ws["index"], "ont", chr1_only, chr1_bundle, "ont_chr1_only")
+    append_bundles(cohort, [chr1_bundle], backend="zarr")
+
+    key = TrackKey("5mC", "combined", "combined")
+    matrix_path = cohort / "views" / key.name() / "chroms" / "chr2" / "matrix.zarr"
+    matrix = zarr.open(str(matrix_path), mode="r")
+    assert matrix.shape[1] == 2
+    assert np.all(np.asarray(matrix[:, 1]) == 0)
+
+
+def test_zarr_short_physical_chromosome_is_padded_as_missing(tmp_path: Path):
+    import zarr
+
+    ws = _workspace(tmp_path)
+    ont_bundle = ws["tmp"] / "sample_ont.smdb"
+    pb_bundle = ws["tmp"] / "sample_pb.smdb"
+    create_bundle(ws["index"], "ont", ws["ont_dir"], ont_bundle, "ont_a")
+    create_bundle(ws["index"], "pacbio", ws["pacbio_prefix"], pb_bundle, "pb_a")
+
+    cohort = ws["tmp"] / "cohort_short_chrom_zarr.mmdb"
+    merge_bundles([ont_bundle, pb_bundle], cohort, backend="zarr")
+    key = TrackKey("5mC", "combined", "combined")
+    matrix_path = cohort / "views" / key.name() / "chroms" / "chr2" / "matrix.zarr"
+    matrix = zarr.open(str(matrix_path), mode="r+")
+    matrix.resize((matrix.shape[0], 1))
+
+    chroms, offsets, pos0 = load_cohort_index(str(cohort))
+    chr2_i = chroms.index("chr2")
+    chr2_lo = int(offsets[chr2_i])
+    chr2_hi = int(pos0.shape[0])
+    reader, _, _ = load_view_reader(str(cohort), key)
+    try:
+        block = reader._read_raw(slice(chr2_lo, chr2_hi))
+        mixed = reader._read_raw(np.asarray([0, chr2_lo], dtype=np.int64))
+    finally:
+        reader.close()
+
+    assert block.shape == (chr2_hi - chr2_lo, 2)
+    assert np.all(block[:, 1] == 0)
+    assert mixed.shape == (2, 2)
+    assert mixed[1, 1] == 0
 
 
 def test_create_pacbio_count_schema_bundle(tmp_path: Path):

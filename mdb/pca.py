@@ -1673,6 +1673,9 @@ def pca_main(args):
             json.dump(params, f, indent=2)
 
         color_cols, hover_cols = plotly_color_options(meta, out, fit_n_pcs, did_umap)
+        hue = pick_pairplot_hue(out, meta, args)
+        if hue in color_cols:
+            color_cols = [hue] + [col for col in color_cols if col != hue]
         color_styles = build_color_styles(out, color_cols)
         evr = getattr(ipca, "explained_variance_ratio_", None)
         if evr is not None and len(evr) >= 2:
@@ -1727,7 +1730,6 @@ def pca_main(args):
         # Pairplot
         n_pair = args.pairplot_pcs_n
         pcs = tuple(f"PC{i}" for i in range(1, n_pair + 1))
-        hue = pick_pairplot_hue(out, meta, args)
         manifest_for_pairplot = out.drop(columns=[f"PC{i+1}" for i in range(fit_n_pcs)], errors="ignore")
         write_pairplot_with_styles(
             scores=sample_coords,

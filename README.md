@@ -36,8 +36,8 @@ mdb --version
 
 - **Sample bundle (`.smdb`)**: one sample, multiple track views (assay/haplotype/strand).
 - **Cohort store (`.mmdb`)**: merged sample bundles for population-scale queries.
-- **Grouped cohort store (`.gmmdb`)**: cohort views aggregated over predefined
-  or de novo CpG groups.
+- **Grouped cohort store (`.mmdb`)**: the same cohort format, with rows reduced
+  to predefined or de novo CpG groups and an additional group-coordinate index.
 - **Backends**:
   - `zarr` (default, compressed, block-aligned merge writes)
   - `npy` (optional compatibility backend)
@@ -169,15 +169,18 @@ mdb query \
 
 ### 6) Build a CpG-grouped cohort database
 
-After `mdb merge`, `mdb group` replaces CpG rows with group-level mean
-methylation values while retaining every assay, haplotype, strand, and sample
-column. The output remains readable by cohort-based analysis commands and is
-marked with `"representation": "cpg_groups"` in `manifest.json`.
+After `mdb merge`, `mdb group` writes a separate database containing
+group-level mean methylation values while retaining every assay, haplotype,
+strand, and sample column. It never modifies the source `.mmdb`. Only true
+multi-CpG groups are materialized by default (`--min-group-cpgs 2`); singleton
+CpGs remain available exclusively through their original source-cohort views.
+The grouped output is marked with `"representation": "cpg_groups"` in
+`manifest.json`.
 
 Use the exact Loyfer atlas-block index consumed by `sniffcell find`:
 
 ```bash
-mdb group -i cohort.mmdb -o cohort.loyfer.gmmdb --grouping loyfer
+mdb group -i cohort.mmdb -o cohort.loyfer.mmdb --grouping loyfer
 ```
 
 This loads the packaged, versioned `loyfer_grch38_v1.npz` index containing
@@ -190,7 +193,7 @@ Use the DECODE/Nanopolish definition, which joins adjacent CpGs separated by at
 most 10 bp:
 
 ```bash
-mdb group -i cohort.mmdb -o cohort.decode.gmmdb --grouping decode
+mdb group -i cohort.mmdb -o cohort.decode.mmdb --grouping decode
 ```
 
 This loads the packaged, versioned `decode_grch38_10bp_v1.npz` index containing
@@ -214,11 +217,12 @@ distance limit:
 ```bash
 mdb group \
   -i cohort.mmdb \
-  -o cohort.denovo.gmmdb \
+  -o cohort.denovo.mmdb \
   --grouping denovo \
   --denovo-min-correlation 0.8 \
   --denovo-max-gap-bp 200 \
-  --denovo-min-shared-samples 3
+  --denovo-min-shared-samples 3 \
+  --threads 4
 ```
 
 The de novo method is adjacent-correlation segmentation. It uses the requested
@@ -229,13 +233,40 @@ at least three samples are shared. Connected runs of passing adjacent links are
 the groups. A missing/constant/under-supported pair creates a boundary. The
 learned boundaries are then reused to aggregate every view in the cohort. This
 is deterministic for a given input and parameter set, but it is a greedy local
-segmentation rather than a statistical change-point model.
+segmentation rather than a statistical change-point model. `--threads` scans
+chromosomes concurrently during de novo discovery and aggregates independent
+assay/haplotype/strand views concurrently when writing the grouped store.
 
-Each grouped store includes `groups.npz`, an inspectable `groups.tsv.gz`, and
-`grouping_summary.json` with the method, parameters, citation/provenance,
-aggregation rule, and achieved reduction. Group values are arithmetic means of
-observed CpG beta values and require at least `--min-observed-cpgs` observations
-per sample.
+The ordinary `index.npz` indexes reduced group rows at their GRCh38 start
+coordinates, so existing cohort readers continue to work. Each grouped store
+also includes `groups.npz` and `grouping_summary.json`. The additional index maps
+every group row to its GRCh38 start/end, source CpG row interval, CpG count, and
+predefined-reference interval. Add `--write-group-table` only when the redundant,
+human-readable `groups.tsv.gz` is useful; omitting it avoids serializing millions
+of text rows during routine builds.
+
+The summary records the method, parameters, citation/provenance, aggregation
+rule, achieved reduction, omitted singleton count, and unchanged source cohort.
+Group values are arithmetic means of observed CpG beta values and require at
+least `--min-observed-cpgs` observations per sample.
+
+Grouped outputs retain the normal cohort-store kind and backend, so they can be
+passed directly to `mdb pca`, `mdb stats`, `mdb viz`, and other cohort readers.
+Point and range queries use each group's GRCh38 start in `index.npz`; use
+`groups.npz` for the complete group interval and source-CpG mapping, and query
+the unchanged source cohort when individual-CpG resolution is required.
+
+As a reference benchmark, grouping a 29,152,456-CpG by 294-sample Zarr cohort
+containing six 5mC/5hmC views produced the following results. These runs also
+wrote `groups.tsv.gz`; elapsed time depends on storage and CPU performance.
+
+| Mode | Threads | Retained groups | Reduction | Total time |
+| --- | ---: | ---: | ---: | ---: |
+| Loyfer | 4 | 4,252,542 | 6.86x | 25m 02s |
+| de novo | 20 | 2,582,857 | 11.29x | 14m 35s |
+
+For the de novo run, group discovery took 108 seconds; the remaining time was
+spent aggregating and compressing the six output views.
 
 ### 7) Run PCA on cohort view
 
@@ -280,7 +311,27 @@ Standard PCA outputs include:
 - `pca_pairplot.png`.
 
 Add `-m metadata.tsv` to make aligned metadata columns available for plot
-coloring. Add `--umap` to calculate a UMAP embedding and write `umap.html`.
+coloring. With metadata coloring enabled, `--pairplot-hue` selects the initial
+color field for both `pca.html` and the pairplot; all usable metadata columns
+remain available through the interactive dropdown.
+
+For example, a grouped cohort is analyzed exactly like the original cohort:
+
+```bash
+mdb pca \
+  -i cohort.denovo.mmdb \
+  -o cohort_denovo_pca \
+  -m metadata.tsv \
+  --assay 5mC \
+  --haplotype combined \
+  --strand combined \
+  --frac_cpgs 0.001 \
+  --n_pcs 10 \
+  --pairplot-mode metadata \
+  --pairplot-hue tissue_name
+```
+
+Add `--umap` to calculate a UMAP embedding and write `umap.html`.
 
 Restrict PCA to CpGs overlapping BED intervals:
 

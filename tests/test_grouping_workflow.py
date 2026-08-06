@@ -110,8 +110,8 @@ def _predefined_dir(tmp_path: Path) -> Path:
         resource_dir / PREDEFINED_RESOURCE_FILES["decode"],
         PredefinedGroupingIndex(
             method="decode",
-            start=np.asarray([1, 20], dtype=np.uint32),
-            end=np.asarray([5, 27], dtype=np.uint32),
+            start=np.asarray([1, 20, 25], dtype=np.uint32),
+            end=np.asarray([5, 25, 27], dtype=np.uint32),
             left_shift_bp=0,
             parameters={"max_adjacent_cpg_distance_bp": 10},
             citation="https://example.test/decode",
@@ -122,8 +122,8 @@ def _predefined_dir(tmp_path: Path) -> Path:
         resource_dir / PREDEFINED_RESOURCE_FILES["loyfer"],
         PredefinedGroupingIndex(
             method="loyfer",
-            start=np.asarray([2, 21], dtype=np.uint32),
-            end=np.asarray([5, 27], dtype=np.uint32),
+            start=np.asarray([2, 21, 26], dtype=np.uint32),
+            end=np.asarray([5, 25, 27], dtype=np.uint32),
             left_shift_bp=1,
             parameters={"coordinate_anchor": "G"},
             citation="https://example.test/loyfer",
@@ -135,35 +135,41 @@ def _predefined_dir(tmp_path: Path) -> Path:
 
 def test_decode_grouping_builds_reduced_compatible_cohort(tmp_path: Path) -> None:
     cohort = _cohort(tmp_path)
-    output = tmp_path / "decode.gmmdb"
+    output = tmp_path / "decode.mmdb"
     summary = group_cohort(
         str(cohort),
         str(output),
         "decode",
         predefined_index_dir=str(_predefined_dir(tmp_path)),
+        write_group_table=True,
         output_backend="npy",
     )
 
     assert summary["source_cpg_rows"] == 5
     assert summary["group_rows"] == 2
+    assert summary["definition_group_rows_before_min_cpg_filter"] == 3
+    assert summary["excluded_small_groups"] == 1
     assert summary["reduction_factor"] == 2.5
     assert summary["parameters"] == {"max_adjacent_cpg_distance_bp": 10}
     assert summary["predefined_index"]["version"] == "test_v1"
     assert np.allclose(
         _matrix(output),
-        np.asarray([[0.15, 0.25, 0.35], [0.80, 0.70, 0.60]], dtype=np.float32),
+        np.asarray([[0.15, 0.25, 0.35], [0.85, 0.75, 0.65]], dtype=np.float32),
     )
     groups = load_group_index(str(output))
     assert groups.start.tolist() == [1, 20]
-    assert groups.end.tolist() == [5, 27]
+    assert groups.end.tolist() == [5, 25]
     manifest = json.loads((output / "manifest.json").read_text())
+    source_manifest = json.loads((cohort / "manifest.json").read_text())
     assert manifest["representation"] == "cpg_groups"
+    assert manifest["kind"] == source_manifest["kind"]
+    assert manifest["group_coordinate_index"] == "groups.npz"
     assert (output / "groups.tsv.gz").is_file()
 
 
 def test_loyfer_grouping_uses_g_anchored_sniffcell_index(tmp_path: Path) -> None:
     cohort = _cohort(tmp_path)
-    output = tmp_path / "loyfer.gmmdb"
+    output = tmp_path / "loyfer.mmdb"
     summary = group_cohort(
         str(cohort),
         str(output),
@@ -174,7 +180,7 @@ def test_loyfer_grouping_uses_g_anchored_sniffcell_index(tmp_path: Path) -> None
     assert summary["group_rows"] == 2
     assert np.allclose(
         _matrix(output),
-        np.asarray([[0.15, 0.25, 0.35], [0.80, 0.70, 0.60]], dtype=np.float32),
+        np.asarray([[0.15, 0.25, 0.35], [0.85, 0.75, 0.65]], dtype=np.float32),
     )
     groups = load_group_index(str(output))
     assert groups.start.tolist() == [1, 20]
@@ -183,7 +189,7 @@ def test_loyfer_grouping_uses_g_anchored_sniffcell_index(tmp_path: Path) -> None
 
 def test_denovo_grouping_uses_adjacent_profile_correlation(tmp_path: Path) -> None:
     cohort = _cohort(tmp_path)
-    output = tmp_path / "denovo.gmmdb"
+    output = tmp_path / "denovo.mmdb"
     summary = group_cohort(
         str(cohort),
         str(output),
@@ -192,6 +198,7 @@ def test_denovo_grouping_uses_adjacent_profile_correlation(tmp_path: Path) -> No
         denovo_max_gap_bp=100,
         denovo_min_shared_samples=3,
         batch_rows=2,
+        threads=2,
         output_backend="npy",
     )
     assert summary["group_rows"] == 2
@@ -204,5 +211,5 @@ def test_denovo_grouping_uses_adjacent_profile_correlation(tmp_path: Path) -> No
 
 
 def test_grouping_name_is_case_insensitive() -> None:
-    args = parse_args(["group", "-i", "in.mmdb", "-o", "out.gmmdb", "--grouping", "DECODE"])
+    args = parse_args(["group", "-i", "in.mmdb", "-o", "out.mmdb", "--grouping", "DECODE"])
     assert args.grouping == "decode"

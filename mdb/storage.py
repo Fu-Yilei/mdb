@@ -805,6 +805,11 @@ class ZarrViewBlockWriter:
             raise ValueError(f"Block shape mismatch for {chrom}: expected {expected}, got {payload.shape}")
         arr[row_lo:row_hi, col_lo:col_hi] = payload
 
+    def ensure_all_chromosomes(self) -> None:
+        """Materialize metadata and the declared sample width for every chromosome."""
+        for chrom in self.chroms:
+            self._open_chrom(chrom)
+
     def flush(self) -> None:
         return None
 
@@ -895,6 +900,7 @@ def append_view_columns(
             block_size,
             zarr_config=zarr_config,
         )
+        writer.ensure_all_chromosomes()
     else:
         writer = NpyViewBlockWriter(path, key, chroms, chrom_offsets, int(pos0.shape[0]), old_n_samples + len(sample_ids), block_size)
     _write_view_manifest(
@@ -1074,7 +1080,13 @@ class ZarrBlockMatrixReader:
         arr = self._open_chrom(chrom)
         if arr is None:
             return np.zeros((hi - lo, self.n_samples), dtype=np.uint16)
-        return np.asarray(arr[lo:hi, : self.n_samples], dtype=np.uint16)
+        available_cols = min(int(arr.shape[1]), self.n_samples)
+        payload = np.asarray(arr[lo:hi, :available_cols], dtype=np.uint16)
+        if available_cols == self.n_samples:
+            return payload
+        out = np.zeros((hi - lo, self.n_samples), dtype=np.uint16)
+        out[:, :available_cols] = payload
+        return out
 
     def _read_raw(self, rows) -> np.ndarray:
         if isinstance(rows, slice):
@@ -1103,7 +1115,9 @@ class ZarrBlockMatrixReader:
             if arr is None:
                 out[mask, :] = np.zeros((local.shape[0], self.n_samples), dtype=np.uint16)
             else:
-                out[mask, :] = np.asarray(arr[local, : self.n_samples], dtype=np.uint16)
+                available_cols = min(int(arr.shape[1]), self.n_samples)
+                out[mask, :] = 0
+                out[mask, :available_cols] = np.asarray(arr[local, :available_cols], dtype=np.uint16)
         return out
 
     def get_block(self, rows) -> np.ndarray:

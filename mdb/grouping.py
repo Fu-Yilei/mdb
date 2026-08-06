@@ -7,6 +7,8 @@ import importlib.resources as importlib_resources
 import json
 import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -291,6 +293,39 @@ def map_predefined_index(input_path: str, predefined: PredefinedGroupingIndex) -
     return groups
 
 
+def filter_group_index(groups: GroupIndex, min_group_cpgs: int = 2) -> GroupIndex:
+    """Keep only true multi-CpG groups; singleton source rows remain in the source mmdb."""
+    if min_group_cpgs < 2:
+        raise ValueError("min_group_cpgs must be >= 2; grouped stores do not copy singleton CpG rows")
+    chrom_ends = _chrom_ends(groups.chrom_offsets, groups.n_groups)
+    output_offsets: list[int] = []
+    fields: dict[str, list[np.ndarray]] = {
+        name: []
+        for name in ("start", "end", "source_row_start", "source_row_end", "reference_start", "reference_end")
+    }
+    running = 0
+    sizes = groups.source_row_end - groups.source_row_start
+    for group_lo, group_hi in zip(groups.chrom_offsets, chrom_ends, strict=False):
+        group_lo = int(group_lo)
+        group_hi = int(group_hi)
+        output_offsets.append(running)
+        keep = sizes[group_lo:group_hi] >= int(min_group_cpgs)
+        running += int(np.sum(keep))
+        for name in fields:
+            fields[name].append(np.asarray(getattr(groups, name)[group_lo:group_hi][keep]))
+    return GroupIndex(
+        method=groups.method,
+        chroms=list(groups.chroms),
+        chrom_offsets=np.asarray(output_offsets, dtype=np.int64),
+        start=_concat(fields["start"], np.uint32),
+        end=_concat(fields["end"], np.uint32),
+        source_row_start=_concat(fields["source_row_start"], np.int64),
+        source_row_end=_concat(fields["source_row_end"], np.int64),
+        reference_start=_concat(fields["reference_start"], np.uint32),
+        reference_end=_concat(fields["reference_end"], np.uint32),
+    )
+
+
 def _build_group_index_from_breaks(
     *,
     method: str,
@@ -372,22 +407,28 @@ def build_denovo_groups(
     max_gap_bp: int = 200,
     min_shared_samples: int = 3,
     batch_rows: int = 10_000,
+    threads: int = 1,
     logger: logging.Logger | None = None,
 ) -> GroupIndex:
     """Learn groups as runs of adjacent, cross-sample-correlated CpGs."""
     if not -1.0 <= float(min_correlation) <= 1.0:
         raise ValueError("denovo min correlation must be within [-1, 1]")
-    if max_gap_bp < 0 or min_shared_samples < 2 or batch_rows < 2:
-        raise ValueError("denovo requires max_gap>=0, min_shared_samples>=2, and batch_rows>=2")
+    if max_gap_bp < 0 or min_shared_samples < 2 or batch_rows < 2 or threads < 1:
+        raise ValueError("denovo requires max_gap>=0, min_shared_samples>=2, batch_rows>=2, and threads>=1")
     if key not in available_views(input_path):
         raise ValueError(f"De novo source view is not present: {key.name()}")
 
     chroms, chrom_offsets, pos0 = load_cohort_index(input_path)
     ends = _chrom_ends(chrom_offsets, int(pos0.shape[0]))
-    reader, _, _ = load_view_reader(input_path, key)
-    breaks: list[np.ndarray] = []
-    try:
-        for chrom, global_lo, global_hi in zip(chroms, chrom_offsets, ends, strict=False):
+    breaks: list[np.ndarray | None] = [None] * len(chroms)
+
+    def scan_chrom(chrom_i: int) -> tuple[int, np.ndarray, float]:
+        chrom = chroms[chrom_i]
+        global_lo = int(chrom_offsets[chrom_i])
+        global_hi = int(ends[chrom_i])
+        reader, _, _ = load_view_reader(input_path, key)
+        started = time.perf_counter()
+        try:
             n_rows = int(global_hi - global_lo)
             before = np.ones(n_rows, dtype=bool)
             local_pos = np.asarray(pos0[int(global_lo) : int(global_hi)], dtype=np.int64)
@@ -398,14 +439,35 @@ def build_denovo_groups(
                 corr, shared = _adjacent_correlations(block, min_shared_samples)
                 close = (local_pos[lo:hi] - local_pos[lo - 1 : hi - 1]) <= int(max_gap_bp)
                 before[lo:hi] = ~(close & (shared >= int(min_shared_samples)) & (corr >= float(min_correlation)))
-            breaks.append(before)
+            return chrom_i, before, time.perf_counter() - started
+        finally:
+            reader.close()
+
+    if threads == 1:
+        results = (scan_chrom(chrom_i) for chrom_i in range(len(chroms)))
+        for chrom_i, before, elapsed in results:
+            breaks[chrom_i] = before
             if logger:
-                logger.info("De novo grouping %s: %s CpGs -> %s groups", chrom, f"{n_rows:,}", f"{int(before.sum()):,}")
-    finally:
-        reader.close()
+                logger.info(
+                    "De novo grouping %s: %s CpGs -> %s groups in %.1fs",
+                    chroms[chrom_i], f"{before.shape[0]:,}", f"{int(before.sum()):,}", elapsed,
+                )
+    else:
+        with ThreadPoolExecutor(max_workers=min(int(threads), len(chroms))) as executor:
+            futures = [executor.submit(scan_chrom, chrom_i) for chrom_i in range(len(chroms))]
+            for future in as_completed(futures):
+                chrom_i, before, elapsed = future.result()
+                breaks[chrom_i] = before
+                if logger:
+                    logger.info(
+                        "De novo grouping %s: %s CpGs -> %s groups in %.1fs",
+                        chroms[chrom_i], f"{before.shape[0]:,}", f"{int(before.sum()):,}", elapsed,
+                    )
+
+    resolved_breaks = [np.asarray(before, dtype=bool) for before in breaks]
 
     return _build_group_index_from_breaks(
-        method="denovo", chroms=chroms, chrom_offsets=chrom_offsets, pos0=pos0, breaks_by_chrom=breaks
+        method="denovo", chroms=chroms, chrom_offsets=chrom_offsets, pos0=pos0, breaks_by_chrom=resolved_breaks
     )
 
 
@@ -413,7 +475,7 @@ def _group_chrom_ends(groups: GroupIndex) -> np.ndarray:
     return _chrom_ends(groups.chrom_offsets, groups.n_groups)
 
 
-def save_group_index(path: str, groups: GroupIndex) -> None:
+def save_group_index(path: str, groups: GroupIndex, *, write_table: bool = False) -> None:
     outdir = Path(path)
     np.savez(
         outdir / GROUP_INDEX_FILE,
@@ -427,6 +489,8 @@ def save_group_index(path: str, groups: GroupIndex) -> None:
         reference_start=groups.reference_start,
         reference_end=groups.reference_end,
     )
+    if not write_table:
+        return
     chrom_ends = _group_chrom_ends(groups)
     with gzip.open(outdir / GROUP_TABLE_FILE, "wt", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
@@ -477,11 +541,13 @@ def load_group_index(path: str) -> GroupIndex:
     )
 
 
-def _encode_group_means(means: np.ndarray, counts: np.ndarray, min_observed_cpgs: int) -> np.ndarray:
-    out = np.zeros(means.shape, dtype=np.uint16)
-    keep = (counts >= int(min_observed_cpgs)) & np.isfinite(means)
+def _encode_group_sums(sums: np.ndarray, counts: np.ndarray, min_observed_cpgs: int) -> np.ndarray:
+    """Encode means of integer beta numerators without a full float source matrix."""
+    out = np.zeros(sums.shape, dtype=np.uint16)
+    keep = counts >= int(min_observed_cpgs)
     if np.any(keep):
-        encoded = np.rint(np.clip(means[keep], 0.0, 1.0) * VALUE_DENOMINATOR).astype(np.uint32) + 1
+        means = np.divide(sums[keep], counts[keep], dtype=np.float64)
+        encoded = np.rint(np.clip(means, 0.0, VALUE_DENOMINATOR)).astype(np.uint32) + 1
         out[keep] = encoded.astype(np.uint16)
     return out
 
@@ -489,29 +555,27 @@ def _encode_group_means(means: np.ndarray, counts: np.ndarray, min_observed_cpgs
 def _aggregate_group_batch(reader, row_starts: np.ndarray, row_ends: np.ndarray, min_observed_cpgs: int) -> np.ndarray:
     source_lo = int(row_starts[0])
     source_hi = int(row_ends[-1])
-    block = np.asarray(reader.read_rows(slice(source_lo, source_hi)), dtype=np.float32)
+    raw = np.asarray(reader._read_raw(slice(source_lo, source_hi)), dtype=np.uint16)
     rel_start = row_starts.astype(np.int64) - source_lo
     rel_end = row_ends.astype(np.int64) - source_lo
-    valid = np.isfinite(block)
-    safe = np.where(valid, block, 0.0)
+    lengths = rel_end - rel_start
 
-    contiguous = bool(rel_start[0] == 0 and rel_end[-1] == block.shape[0])
+    contiguous = bool(rel_start[0] == 0 and rel_end[-1] == raw.shape[0])
     if rel_start.shape[0] > 1:
         contiguous = contiguous and bool(np.all(rel_end[:-1] == rel_start[1:]))
-    if contiguous:
-        sums = np.add.reduceat(safe, rel_start, axis=0)
-        counts = np.add.reduceat(valid.astype(np.int32), rel_start, axis=0)
-    else:
-        sum_prefix = np.vstack(
-            [np.zeros((1, block.shape[1]), dtype=np.float64), np.cumsum(safe, axis=0, dtype=np.float64)]
-        )
-        count_prefix = np.vstack(
-            [np.zeros((1, block.shape[1]), dtype=np.int32), np.cumsum(valid, axis=0, dtype=np.int32)]
-        )
-        sums = sum_prefix[rel_end] - sum_prefix[rel_start]
-        counts = count_prefix[rel_end] - count_prefix[rel_start]
-    means = np.divide(sums, counts, out=np.full(sums.shape, np.nan, dtype=np.float64), where=counts > 0)
-    return _encode_group_means(means, counts, min_observed_cpgs)
+    if not contiguous:
+        inclusion_delta = np.zeros(raw.shape[0] + 1, dtype=np.int32)
+        inclusion_delta[rel_start] += 1
+        inclusion_delta[rel_end] -= 1
+        raw = raw[np.cumsum(inclusion_delta[:-1]) > 0]
+
+    reduce_starts = np.r_[0, np.cumsum(lengths[:-1], dtype=np.int64)]
+    valid = raw != 0
+    numerators = raw.astype(np.uint32)
+    numerators[valid] -= 1
+    sums = np.add.reduceat(numerators, reduce_starts, axis=0, dtype=np.uint64)
+    counts = np.add.reduceat(valid, reduce_starts, axis=0, dtype=np.uint32)
+    return _encode_group_sums(sums, counts, min_observed_cpgs)
 
 
 def _copy_and_group_view(
@@ -524,7 +588,8 @@ def _copy_and_group_view(
     batch_groups: int,
     min_observed_cpgs: int,
     logger: logging.Logger,
-) -> None:
+) -> float:
+    started = time.perf_counter()
     reader, _, _ = load_view_reader(input_path, key)
     columns = load_view_columns(input_path, key)
     writer = create_view_store(
@@ -566,6 +631,7 @@ def _copy_and_group_view(
     finally:
         reader.close()
         writer.close()
+    return time.perf_counter() - started
 
 
 def _sha256(path: Path) -> str:
@@ -587,8 +653,11 @@ def group_cohort(
     denovo_max_gap_bp: int = 200,
     denovo_min_shared_samples: int = 3,
     min_observed_cpgs: int = 1,
+    min_group_cpgs: int = 2,
+    write_group_table: bool = False,
     batch_rows: int = 10_000,
     batch_groups: int = 8_192,
+    threads: int = 1,
     output_backend: str = "same",
     logger: logging.Logger | None = None,
 ) -> dict:
@@ -597,12 +666,14 @@ def group_cohort(
     output_path = str(Path(output_path).resolve())
     if input_path == output_path:
         raise ValueError("Grouped output must differ from the input cohort")
-    if min_observed_cpgs < 1 or batch_groups < 1:
-        raise ValueError("min_observed_cpgs and batch_groups must be >= 1")
+    if min_observed_cpgs < 1 or batch_groups < 1 or threads < 1 or min_group_cpgs < 2:
+        raise ValueError("min_observed_cpgs, batch_groups, and threads must be >=1; min_group_cpgs must be >=2")
+    total_started = time.perf_counter()
     input_manifest = load_cohort_manifest(input_path)
     chroms, _, source_pos0 = load_cohort_index(input_path)
     method = str(grouping).strip().lower()
     predefined_details = None
+    grouping_started = time.perf_counter()
     if method in PREDEFINED_RESOURCE_FILES:
         predefined, predefined_path, predefined_sha256 = resolve_predefined_index(method, predefined_index_dir)
         groups = map_predefined_index(input_path, predefined)
@@ -624,6 +695,7 @@ def group_cohort(
             max_gap_bp=denovo_max_gap_bp,
             min_shared_samples=denovo_min_shared_samples,
             batch_rows=batch_rows,
+            threads=threads,
             logger=logger,
         )
         parameters = {
@@ -638,13 +710,21 @@ def group_cohort(
     else:
         raise ValueError("grouping must be one of: loyfer, decode, denovo")
     groups.validate(int(source_pos0.shape[0]))
+    definition_group_rows = groups.n_groups
+    definition_covered_source_cpg_rows = groups.n_source_cpgs
+    groups = filter_group_index(groups, min_group_cpgs)
+    groups.validate(int(source_pos0.shape[0]))
+    grouping_seconds = time.perf_counter() - grouping_started
 
     backend = cohort_backend(input_path) if output_backend == "same" else output_backend
     block_size = int(input_manifest.get("block_size", 64))
     create_kwargs = {
         "backend": backend,
         "block_size": block_size,
-        "zarr_row_chunk": int(input_manifest.get("zarr_row_chunk", 65_536)),
+        # Each aggregation write should cover a complete output row chunk.  A
+        # larger inherited source chunk would otherwise be recompressed once
+        # per partial group batch.
+        "zarr_row_chunk": int(batch_groups),
         "zarr_codec": str(input_manifest.get("zarr_codec", "zstd")),
         "zarr_clevel": int(input_manifest.get("zarr_clevel", 5)),
         "zarr_shuffle": str(input_manifest.get("zarr_shuffle", "bitshuffle")),
@@ -657,10 +737,15 @@ def group_cohort(
         index_path=None,
         **create_kwargs,
     )
-    save_group_index(output_path, groups)
+    index_write_started = time.perf_counter()
+    save_group_index(output_path, groups, write_table=write_group_table)
+    index_write_seconds = time.perf_counter() - index_write_started
 
-    for key in available_views(input_path):
-        _copy_and_group_view(
+    selected_views = available_views(input_path)
+    view_seconds: dict[str, float] = {}
+
+    def group_one_view(key: TrackKey) -> tuple[str, float]:
+        elapsed = _copy_and_group_view(
             input_path,
             output_path,
             key,
@@ -670,6 +755,19 @@ def group_cohort(
             min_observed_cpgs=min_observed_cpgs,
             logger=logger,
         )
+        return key.name(), elapsed
+
+    if threads == 1:
+        for key in selected_views:
+            name, elapsed = group_one_view(key)
+            view_seconds[name] = elapsed
+    else:
+        with ThreadPoolExecutor(max_workers=min(int(threads), len(selected_views))) as executor:
+            futures = [executor.submit(group_one_view, key) for key in selected_views]
+            for future in as_completed(futures):
+                name, elapsed = future.result()
+                view_seconds[name] = elapsed
+                logger.info("Grouped view %s completed in %.1fs", name, elapsed)
 
     reduction = float(source_pos0.shape[0] / groups.n_groups)
     summary = {
@@ -678,17 +776,31 @@ def group_cohort(
         "source_cohort": input_path,
         "source_cpg_rows": int(source_pos0.shape[0]),
         "group_rows": groups.n_groups,
+        "definition_group_rows_before_min_cpg_filter": definition_group_rows,
+        "excluded_small_groups": definition_group_rows - groups.n_groups,
         "reduction_factor": reduction,
         "covered_source_cpg_rows": groups.n_source_cpgs,
+        "definition_covered_source_cpg_rows": definition_covered_source_cpg_rows,
         "aggregation": "arithmetic_mean_of_observed_cpg_beta_values",
         "min_observed_cpgs": int(min_observed_cpgs),
+        "min_group_cpgs": int(min_group_cpgs),
+        "singleton_policy": "not_materialized; original values remain in source_cohort",
+        "threads": int(threads),
         "parameters": parameters,
         "predefined_index": predefined_details,
         "citation": citation,
         "coordinate_system": "0-based half-open; Loyfer reference_start/reference_end retain atlas G-anchored coordinates",
         "group_index": GROUP_INDEX_FILE,
-        "group_table": GROUP_TABLE_FILE,
+        "group_coordinate_index": GROUP_INDEX_FILE,
+        "group_table": GROUP_TABLE_FILE if write_group_table else None,
+        "group_table_written": bool(write_group_table),
         "source_chromosomes": chroms,
+        "timing_seconds": {
+            "group_definition": grouping_seconds,
+            "group_index_write": index_write_seconds,
+            "views": view_seconds,
+            "total": time.perf_counter() - total_started,
+        },
     }
     summary_path = Path(output_path) / GROUP_SUMMARY_FILE
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -700,7 +812,8 @@ def group_cohort(
             "grouping": method,
             "source_cohort": input_path,
             "group_index": GROUP_INDEX_FILE,
-            "group_table": GROUP_TABLE_FILE,
+            "group_coordinate_index": GROUP_INDEX_FILE,
+            "group_table": GROUP_TABLE_FILE if write_group_table else None,
             "grouping_summary": GROUP_SUMMARY_FILE,
         }
     )
@@ -728,8 +841,11 @@ def grouping_main(args) -> dict:
         denovo_max_gap_bp=getattr(args, "denovo_max_gap_bp", 200),
         denovo_min_shared_samples=getattr(args, "denovo_min_shared_samples", 3),
         min_observed_cpgs=getattr(args, "min_observed_cpgs", 1),
+        min_group_cpgs=getattr(args, "min_group_cpgs", 2),
+        write_group_table=bool(getattr(args, "write_group_table", False)),
         batch_rows=getattr(args, "batch_rows", 10_000),
         batch_groups=getattr(args, "batch_groups", 8_192),
+        threads=getattr(args, "threads", 1),
         output_backend=getattr(args, "cohort_backend", "same"),
         logger=logger,
     )

@@ -64,7 +64,7 @@ def parse_args(argv):
         help="Build a reduced CpG-grouped cohort database from a merged .mmdb",
     )
     group_parser.add_argument("-i", "--input", required=True, help="Input merged cohort store (.mmdb)")
-    group_parser.add_argument("-o", "--output", required=True, help="Output grouped cohort store (recommended suffix: .gmmdb)")
+    group_parser.add_argument("-o", "--output", required=True, help="Output grouped cohort store (ordinary .mmdb format)")
     group_parser.add_argument(
         "-g",
         "--grouping",
@@ -105,6 +105,17 @@ def parse_args(argv):
         help="Minimum observed CpGs required to emit a group value per sample, default=1",
     )
     group_parser.add_argument(
+        "--min-group-cpgs",
+        type=int,
+        default=2,
+        help="Minimum CpGs in a materialized group; must be >=2 so singleton CpG views are never copied, default=2",
+    )
+    group_parser.add_argument(
+        "--write-group-table",
+        action="store_true",
+        help="Also write the large human-readable groups.tsv.gz; groups.npz is always written",
+    )
+    group_parser.add_argument(
         "--batch-rows",
         type=int,
         default=10_000,
@@ -115,6 +126,13 @@ def parse_args(argv):
         type=int,
         default=8_192,
         help="Groups aggregated per output block, default=8,192",
+    )
+    group_parser.add_argument(
+        "-t",
+        "--threads",
+        type=int,
+        default=1,
+        help="Concurrent chromosome workers for de novo discovery and view workers for aggregation, default=1",
     )
     group_parser.add_argument(
         "--cohort-backend",
@@ -181,7 +199,10 @@ def parse_args(argv):
         choices=("metadata", "sample", "none"),
         help="Pairplot coloring mode: metadata, sample, or none; default auto",
     )
-    pca_parser.add_argument("--pairplot-hue", help="Preferred metadata column for pairplot hue when --pairplot-mode metadata")
+    pca_parser.add_argument(
+        "--pairplot-hue",
+        help="Preferred metadata column for initial PCA and pairplot coloring when --pairplot-mode metadata",
+    )
     pca_parser.add_argument("--pairplot_diag_kind", choices=("kde", "hist"), default="kde", help="Pairplot diagonal kind, default=kde")
     pca_parser.add_argument("--pairplot_corner", action="store_true", help="Use lower triangle only for pairplot")
     pca_parser.add_argument(
