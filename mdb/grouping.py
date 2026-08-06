@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from mdb.schema import TrackKey, VALUE_DENOMINATOR
 from mdb.storage import (
@@ -28,9 +27,6 @@ from mdb.storage import (
 GROUP_INDEX_FILE = "groups.npz"
 GROUP_TABLE_FILE = "groups.tsv.gz"
 GROUP_SUMMARY_FILE = "grouping_summary.json"
-LOYFER_DEFAULT_INDEX = Path(
-    "/stornext/snfs210/fritz/Yilei/SniffMeth/atlas/all_celltypes_blocks.index.gz"
-)
 PREDEFINED_RESOURCE_FILES = {
     "loyfer": "loyfer_grch38_v1.npz",
     "decode": "decode_grch38_10bp_v1.npz",
@@ -345,24 +341,6 @@ def _build_group_index_from_breaks(
     )
 
 
-def build_decode_groups(input_path: str, max_gap_bp: int = 10) -> GroupIndex:
-    """Build the adjacent-CpG units described by Stefansson et al. (2024)."""
-    if max_gap_bp < 0:
-        raise ValueError("decode max gap must be >= 0")
-    chroms, chrom_offsets, pos0 = load_cohort_index(input_path)
-    ends = _chrom_ends(chrom_offsets, int(pos0.shape[0]))
-    breaks: list[np.ndarray] = []
-    for lo, hi in zip(chrom_offsets, ends, strict=False):
-        local = np.asarray(pos0[int(lo) : int(hi)], dtype=np.int64)
-        before = np.ones(local.shape[0], dtype=bool)
-        if local.shape[0] > 1:
-            before[1:] = np.diff(local) > int(max_gap_bp)
-        breaks.append(before)
-    return _build_group_index_from_breaks(
-        method="decode", chroms=chroms, chrom_offsets=chrom_offsets, pos0=pos0, breaks_by_chrom=breaks
-    )
-
-
 def _adjacent_correlations(block: np.ndarray, min_shared_samples: int) -> tuple[np.ndarray, np.ndarray]:
     left = np.asarray(block[:-1], dtype=np.float32)
     right = np.asarray(block[1:], dtype=np.float32)
@@ -429,99 +407,6 @@ def build_denovo_groups(
     return _build_group_index_from_breaks(
         method="denovo", chroms=chroms, chrom_offsets=chrom_offsets, pos0=pos0, breaks_by_chrom=breaks
     )
-
-
-def resolve_loyfer_index(explicit_path: str | None = None) -> Path:
-    candidates: list[Path] = []
-    if explicit_path:
-        candidates.append(Path(explicit_path))
-    env_path = os.environ.get("MDB_LOYFER_INDEX")
-    if env_path:
-        candidates.append(Path(env_path))
-    sniffmeth_home = os.environ.get("SNIFFMETH_HOME")
-    if sniffmeth_home:
-        candidates.append(Path(sniffmeth_home) / "atlas" / "all_celltypes_blocks.index.gz")
-    candidates.append(LOYFER_DEFAULT_INDEX)
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.resolve()
-    raise FileNotFoundError(
-        "Could not find the Loyfer/SniffCell block index. Pass --loyfer-index, set MDB_LOYFER_INDEX, "
-        "or set SNIFFMETH_HOME."
-    )
-
-
-def build_loyfer_groups(input_path: str, index_path: str | None = None) -> tuple[GroupIndex, Path]:
-    """Map the G-anchored SniffCell/Loyfer atlas blocks onto an mmdb CpG index."""
-    resolved = resolve_loyfer_index(index_path)
-    chroms, chrom_offsets, pos0 = load_cohort_index(input_path)
-    source_ends = _chrom_ends(chrom_offsets, int(pos0.shape[0]))
-    chrom_lookup = {chrom: i for i, chrom in enumerate(chroms)}
-    collected: dict[str, dict[str, list[np.ndarray]]] = {
-        chrom: {name: [] for name in ("start", "end", "row_start", "row_end", "ref_start", "ref_end")}
-        for chrom in chroms
-    }
-    names = ["chrom", "start", "end", "start_cpg", "end_cpg"]
-    for chunk in pd.read_csv(
-        resolved,
-        sep="\t",
-        header=None,
-        names=names,
-        compression="infer",
-        chunksize=500_000,
-        dtype={"chrom": "string", "start": "int64", "end": "int64", "start_cpg": "int64", "end_cpg": "int64"},
-    ):
-        for chrom, sub in chunk.groupby("chrom", sort=False):
-            chrom = str(chrom)
-            chrom_i = chrom_lookup.get(chrom)
-            if chrom_i is None:
-                continue
-            global_lo = int(chrom_offsets[chrom_i])
-            global_hi = int(source_ends[chrom_i])
-            local_pos = np.asarray(pos0[global_lo:global_hi], dtype=np.int64)
-            ref_start = sub["start"].to_numpy(dtype=np.int64)
-            ref_end = sub["end"].to_numpy(dtype=np.int64)
-            # Loyfer atlas intervals are G-anchored. Shift only the left edge by
-            # one base, matching the correction used by SniffCell annotation.
-            local_start = np.searchsorted(local_pos, np.maximum(ref_start - 1, 0), side="left")
-            local_end = np.searchsorted(local_pos, ref_end, side="left")
-            keep = local_end > local_start
-            if not np.any(keep):
-                continue
-            local_start = local_start[keep]
-            local_end = local_end[keep]
-            bucket = collected[chrom]
-            bucket["start"].append(local_pos[local_start].astype(np.uint32))
-            bucket["end"].append((local_pos[local_end - 1].astype(np.uint64) + 2).astype(np.uint32))
-            bucket["row_start"].append((local_start + global_lo).astype(np.int64))
-            bucket["row_end"].append((local_end + global_lo).astype(np.int64))
-            bucket["ref_start"].append(ref_start[keep].astype(np.uint32))
-            bucket["ref_end"].append(ref_end[keep].astype(np.uint32))
-
-    output_offsets: list[int] = []
-    fields: dict[str, list[np.ndarray]] = {name: [] for name in collected[chroms[0]]}
-    running = 0
-    for chrom in chroms:
-        output_offsets.append(running)
-        bucket = collected[chrom]
-        n_chrom = sum(int(x.shape[0]) for x in bucket["start"])
-        running += n_chrom
-        for name in fields:
-            fields[name].extend(bucket[name])
-
-    groups = GroupIndex(
-        method="loyfer",
-        chroms=list(chroms),
-        chrom_offsets=np.asarray(output_offsets, dtype=np.int64),
-        start=_concat(fields["start"], np.uint32),
-        end=_concat(fields["end"], np.uint32),
-        source_row_start=_concat(fields["row_start"], np.int64),
-        source_row_end=_concat(fields["row_end"], np.int64),
-        reference_start=_concat(fields["ref_start"], np.uint32),
-        reference_end=_concat(fields["ref_end"], np.uint32),
-    )
-    groups.validate(int(pos0.shape[0]))
-    return groups, resolved
 
 
 def _group_chrom_ends(groups: GroupIndex) -> np.ndarray:
@@ -742,10 +627,12 @@ def group_cohort(
             logger=logger,
         )
         parameters = {
+            "algorithm": "adjacent_pair_pearson_connected_runs",
             "source_view": denovo_key.name(),
             "min_adjacent_profile_correlation": float(denovo_min_correlation),
             "max_adjacent_cpg_distance_bp": int(denovo_max_gap_bp),
             "min_shared_samples": int(denovo_min_shared_samples),
+            "failed_pair_policy": "start_new_group",
         }
         citation = None
     else:

@@ -7,7 +7,8 @@
 `mdb` builds, merges, queries, and analyzes CpG-by-sample methylation matrices
 from ONT and PacBio BED inputs. It also provides cohort PCA/UMAP, summary
 statistics, interactive methylation visualization, ONT ASM PCA, and
-strand-bias hotspot detection.
+strand-bias hotspot detection. Cohorts can also be reduced to predefined or
+data-driven CpG groups for downstream analysis.
 
 - PyPI package: `methdb`
 - CLI command: `mdb`
@@ -35,6 +36,8 @@ mdb --version
 
 - **Sample bundle (`.smdb`)**: one sample, multiple track views (assay/haplotype/strand).
 - **Cohort store (`.mmdb`)**: merged sample bundles for population-scale queries.
+- **Grouped cohort store (`.gmmdb`)**: cohort views aggregated over predefined
+  or de novo CpG groups.
 - **Backends**:
   - `zarr` (default, compressed, block-aligned merge writes)
   - `npy` (optional compatibility backend)
