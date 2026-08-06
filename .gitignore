@@ -208,6 +208,8 @@ __marimo__/
 
 
 test*
+!tests/
+!tests/*.py
 hg38*
 
 # local scratch scripts (do not track)

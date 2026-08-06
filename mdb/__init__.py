@@ -25,4 +25,10 @@ def plot(*args, **kwargs):
     return _plot(*args, **kwargs)
 
 
-__all__ = ["__version__", "asmpca", "stats", "viz", "plot"]
+def group(*args, **kwargs):
+    from mdb.grouping import group_cohort as _group
+
+    return _group(*args, **kwargs)
+
+
+__all__ = ["__version__", "asmpca", "stats", "viz", "plot", "group"]

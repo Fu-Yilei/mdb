@@ -17,6 +17,9 @@ def main(argv=None):
     elif args.command == "merge":
         from mdb.merge import merge_main
         merge_main(args)    
+    elif args.command == "group":
+        from mdb.grouping import grouping_main
+        grouping_main(args)
     elif args.command == "append":
         from mdb.merge import append_main
         append_main(args)

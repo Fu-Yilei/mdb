@@ -164,7 +164,77 @@ mdb query \
   --region chr1:10469-12000
 ```
 
-### 6) Run PCA on cohort view
+### 6) Build a CpG-grouped cohort database
+
+After `mdb merge`, `mdb group` replaces CpG rows with group-level mean
+methylation values while retaining every assay, haplotype, strand, and sample
+column. The output remains readable by cohort-based analysis commands and is
+marked with `"representation": "cpg_groups"` in `manifest.json`.
+
+Use the exact Loyfer atlas-block index consumed by `sniffcell find`:
+
+```bash
+mdb group -i cohort.mmdb -o cohort.loyfer.gmmdb --grouping loyfer
+```
+
+This loads the packaged, versioned `loyfer_grch38_v1.npz` index containing
+7,990,609 blocks from the exact atlas index used by `sniffcell find`. Loyfer
+intervals are G-anchored, so the stored metadata fixes a one-base left shift
+when mapping them onto the C-anchored `.mmdb` CpG index. This is the block
+representation from the [Loyfer methylation atlas](https://www.nature.com/articles/s41586-022-05580-6).
+
+Use the DECODE/Nanopolish definition, which joins adjacent CpGs separated by at
+most 10 bp:
+
+```bash
+mdb group -i cohort.mmdb -o cohort.decode.gmmdb --grouping decode
+```
+
+This loads the packaged, versioned `decode_grch38_10bp_v1.npz` index containing
+22,179,326 autosomal CpG units. Its parameters are fixed: adjacent CpGs at most
+10 bp apart belong to the same unit. This applies the published
+[DECODE/Nanopolish CpG-unit rule](https://www.nature.com/articles/s41588-024-01851-2)
+to the complete GRCh38 autosomal CpG index; it does not attempt to recreate the
+paper's cohort-specific Nanopolish and quality-control exclusions. There is no
+runtime DECODE distance option.
+
+The packaged definitions are immutable inputs to named modes. Set
+`MDB_GROUP_INDEX_DIR` or use `--predefined-index-dir` only to relocate the same
+versioned files. The file method, version, assembly, parameters, source, and
+SHA-256 are written into `grouping_summary.json`, and the mapped group index is
+copied into the output database.
+
+Or learn groups from the cohort. Adjacent CpGs are joined when their
+cross-sample methylation profiles meet the correlation threshold and genomic
+distance limit:
+
+```bash
+mdb group \
+  -i cohort.mmdb \
+  -o cohort.denovo.gmmdb \
+  --grouping denovo \
+  --denovo-min-correlation 0.8 \
+  --denovo-max-gap-bp 200 \
+  --denovo-min-shared-samples 3
+```
+
+The de novo method is adjacent-correlation segmentation. It uses the requested
+source view (`5mC__combined__combined` by default), computes Pearson correlation
+for every neighboring CpG pair using samples observed at both positions, and
+links a pair when correlation is at least 0.8, distance is at most 200 bp, and
+at least three samples are shared. Connected runs of passing adjacent links are
+the groups. A missing/constant/under-supported pair creates a boundary. The
+learned boundaries are then reused to aggregate every view in the cohort. This
+is deterministic for a given input and parameter set, but it is a greedy local
+segmentation rather than a statistical change-point model.
+
+Each grouped store includes `groups.npz`, an inspectable `groups.tsv.gz`, and
+`grouping_summary.json` with the method, parameters, citation/provenance,
+aggregation rule, and achieved reduction. Group values are arithmetic means of
+observed CpG beta values and require at least `--min-observed-cpgs` observations
+per sample.
+
+### 7) Run PCA on cohort view
 
 ```bash
 mdb pca \
@@ -233,7 +303,7 @@ The aggregation mode also writes `region_avg.tsv`. Both BED modes require a
 current cohort store (`.mmdb`) because legacy flat NPY folders do not contain
 genomic positions.
 
-### 7) Summarize cohort stats
+### 8) Summarize cohort stats
 
 ```bash
 mdb stats \
@@ -261,7 +331,7 @@ mdb stats \
 usable grouping columns. PNG versions of the plots are written when Plotly PNG
 export is available.
 
-### 8) Build binned methylation profile HTML
+### 9) Build binned methylation profile HTML
 
 ```bash
 mdb viz \
@@ -283,7 +353,7 @@ mdb viz \
 - `viz_manifest.json`: run parameters, resolved inputs, selected tracks, and output paths.
 - `viz.log`: detailed run log.
 
-### 9) Plot a locus-focused methylation profile from a cohort
+### 10) Plot a locus-focused methylation profile from a cohort
 
 ```bash
 mdb plot \
@@ -314,7 +384,7 @@ It writes:
 - `plot_manifest.json`: run parameters and output paths.
 - `plot.log`: detailed run log.
 
-### 10) Run PCA on ONT ASM segments
+### 11) Run PCA on ONT ASM segments
 
 `asmpca` expects modkit DMR segment BEDs containing fields such as `name`,
 `effect_size`, and `cohen_h`:
@@ -348,7 +418,7 @@ mdb asmpca \
 Core outputs are `embedding.tsv`, `dmr_regions_used.bed`, `params.json`,
 `pca.html`, `pca_pairplot.html`, `pca_pairplot.png`, and `pca_umap.log`.
 
-### 11) Detect strand-biased methylation hotspots
+### 12) Detect strand-biased methylation hotspots
 
 `strand` requires a cohort store containing matching `plus` and `minus` views
 for the requested assay and haplotype:

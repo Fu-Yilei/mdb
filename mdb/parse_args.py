@@ -59,6 +59,71 @@ def parse_args(argv):
     )
     merge_parser.add_argument("--zarr-codec-threads", type=int, default=4, help="Codec threads for zarr backend, default=4")
 
+    group_parser = subparsers.add_parser(
+        "group",
+        help="Build a reduced CpG-grouped cohort database from a merged .mmdb",
+    )
+    group_parser.add_argument("-i", "--input", required=True, help="Input merged cohort store (.mmdb)")
+    group_parser.add_argument("-o", "--output", required=True, help="Output grouped cohort store (recommended suffix: .gmmdb)")
+    group_parser.add_argument(
+        "-g",
+        "--grouping",
+        required=True,
+        type=str.lower,
+        choices=("loyfer", "decode", "denovo"),
+        help="CpG grouping definition: Loyfer atlas blocks, DECODE 10-bp units, or data-driven de novo groups",
+    )
+    group_parser.add_argument(
+        "--predefined-index-dir",
+        help="Optional directory containing the versioned built-in index files; default=packaged indexes",
+    )
+    group_parser.add_argument("--denovo-assay", default="5mC", help="Assay view used to learn de novo groups, default=5mC")
+    group_parser.add_argument("--denovo-haplotype", default="combined", help="Haplotype view used to learn de novo groups, default=combined")
+    group_parser.add_argument("--denovo-strand", default="combined", help="Strand view used to learn de novo groups, default=combined")
+    group_parser.add_argument(
+        "--denovo-min-correlation",
+        type=float,
+        default=0.8,
+        help="Minimum Pearson correlation between adjacent CpG sample profiles, default=0.8",
+    )
+    group_parser.add_argument(
+        "--denovo-max-gap-bp",
+        type=int,
+        default=200,
+        help="Maximum distance between adjacent CpGs in a de novo group, default=200",
+    )
+    group_parser.add_argument(
+        "--denovo-min-shared-samples",
+        type=int,
+        default=3,
+        help="Minimum samples observed at both adjacent CpGs for correlation, default=3",
+    )
+    group_parser.add_argument(
+        "--min-observed-cpgs",
+        type=int,
+        default=1,
+        help="Minimum observed CpGs required to emit a group value per sample, default=1",
+    )
+    group_parser.add_argument(
+        "--batch-rows",
+        type=int,
+        default=10_000,
+        help="Source CpG rows per de novo correlation block, default=10,000",
+    )
+    group_parser.add_argument(
+        "--batch-groups",
+        type=int,
+        default=8_192,
+        help="Groups aggregated per output block, default=8,192",
+    )
+    group_parser.add_argument(
+        "--cohort-backend",
+        choices=("same", "npy", "zarr"),
+        default="same",
+        help="Output storage backend, default=same as input",
+    )
+    group_parser.add_argument("--verbose", action="store_true", help="More stderr logging")
+
     append_parser = subparsers.add_parser("append", help="Append sample bundles into an existing cohort store")
     append_parser.add_argument("-c", "--cohort", required=True, help="Existing cohort store path to update in place")
     append_parser.add_argument("-i", "--inputs", nargs="+", required=True, help="Input sample bundle directories, globs, or a .txt manifest")
