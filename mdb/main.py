@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import argparse, sys, os
+import sys
 
 from mdb.parse_args import parse_args
 
@@ -16,7 +16,10 @@ def main(argv=None):
         create_main(args)
     elif args.command == "merge":
         from mdb.merge import merge_main
-        merge_main(args)    
+        merge_main(args)
+    elif args.command == "atlas":
+        from mdb.atlas import atlas_main
+        atlas_main(args)
     elif args.command == "group":
         from mdb.grouping import grouping_main
         grouping_main(args)

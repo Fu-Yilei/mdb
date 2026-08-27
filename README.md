@@ -133,6 +133,26 @@ Build modifiedC view (`5mC + 5hmC` where available):
 mdb merge -i sample_ont.smdb sample_pb.smdb -o cohort_modifiedc.mmdb -m
 ```
 
+### 3b) Combine a legacy SniffCell Loyfer atlas with grouped ONT tracks
+
+The legacy SniffCell matrix is unresolved bisulfite modified-C signal, so it is
+stored as `modifiedC`. ONT `5mC` and `5hmC` remain separate MDB views; they are
+never summed by this command.
+
+```bash
+mdb atlas \
+  --legacy-npy atlas/all_celltypes_blocks.npy \
+  --legacy-index atlas/all_celltypes_blocks.index.gz \
+  --legacy-samples atlas/all_celltypes.txt \
+  --legacy-assay modifiedC \
+  --cohorts fans_5mc_5hmc.loyfer.mmdb \
+  --output combined_loyfer_ont.mmdb
+```
+
+Every grouped MDB source row must exactly match a row in the legacy Loyfer
+index. The output uses the full legacy row system and stores absent ONT rows as
+missing. `atlas_manifest.json` records the sources, views, and alignment counts.
+
 ### 4) Append new samples to existing cohort
 
 ```bash

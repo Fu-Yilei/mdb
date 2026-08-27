@@ -59,6 +59,38 @@ def parse_args(argv):
     )
     merge_parser.add_argument("--zarr-codec-threads", type=int, default=4, help="Codec threads for zarr backend, default=4")
 
+    atlas_parser = subparsers.add_parser(
+        "atlas",
+        help="Build one MDB atlas from a legacy SniffCell Loyfer NPY matrix and grouped MDB cohorts",
+    )
+    atlas_parser.add_argument("--legacy-npy", required=True, help="Legacy SniffCell rows-by-samples NPY matrix")
+    atlas_parser.add_argument("--legacy-index", required=True, help="Companion five-column SniffCell Loyfer index TSV/TSV.GZ")
+    atlas_parser.add_argument("--legacy-samples", required=True, help="Companion one-sample-id-per-line metadata file")
+    atlas_parser.add_argument(
+        "--legacy-assay",
+        default="modifiedC",
+        help="Assay label for the unresolved legacy matrix, default=modifiedC",
+    )
+    atlas_parser.add_argument(
+        "--cohorts",
+        nargs="+",
+        required=True,
+        help="Grouped MDB cohort(s) whose rows exactly match a subset of the legacy Loyfer index",
+    )
+    atlas_parser.add_argument("-o", "--output", required=True, help="Output combined atlas .mmdb directory")
+    atlas_parser.add_argument("--batch-rows", type=int, default=32768, help="Rows encoded per streaming batch, default=32768")
+    atlas_parser.add_argument("--block-size", type=int, default=64, help="Samples per Zarr column chunk, default=64")
+    atlas_parser.add_argument("--cohort-backend", choices=("npy", "zarr"), default="zarr", help="Output backend, default=zarr")
+    atlas_parser.add_argument("--zarr-row-chunk", type=int, default=32768, help="Zarr row chunk size, default=32768")
+    atlas_parser.add_argument("--zarr-codec", choices=("zstd",), default="zstd", help="Zarr codec, default=zstd")
+    atlas_parser.add_argument("--zarr-clevel", type=int, default=5, help="Zarr compression level, default=5")
+    atlas_parser.add_argument(
+        "--zarr-shuffle",
+        choices=("none", "shuffle", "bitshuffle"),
+        default="bitshuffle",
+        help="Zarr shuffle mode, default=bitshuffle",
+    )
+
     group_parser = subparsers.add_parser(
         "group",
         help="Build a reduced CpG-grouped cohort database from a merged .mmdb",
