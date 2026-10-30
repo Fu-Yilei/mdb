@@ -9,9 +9,23 @@ from ONT and PacBio BED inputs. It also provides cohort PCA/UMAP, summary
 statistics, interactive methylation visualization, ONT ASM PCA, and
 strand-bias hotspot detection. Cohorts can also be reduced to predefined or
 data-driven CpG groups for downstream analysis.
+Individual-CpG and grouped cohorts can be exported as methylation phenotype
+matrices for TensorQTL with `mdb export-tensorqtl`.
 
 - PyPI package: `methdb`
 - CLI command: `mdb`
+
+## Documentation
+
+- [Build methylation phenotype matrices for TensorQTL](docs/wiki/Building-TensorQTL-inputs-with-mdb.md):
+  ONT and PacBio inputs, individual CpGs and groups, sample matching, missing
+  values, and subsequent TensorQTL commands.
+- [Build an input matrix for SniffCell find](docs/wiki/Building-SniffCell-find-inputs-with-mdb.md):
+  Reference-matrix preparation and the SniffCell input contract.
+- [Run PCA across tissues](docs/wiki/PCA-of-long-read-methylation-across-tissues.md):
+  Long-read methylation cohorts, tissue metadata, feature selection, and PCA outputs.
+- [Detect strand-specific methylation](docs/wiki/Detecting-strand-specific-methylation-with-mdb.md):
+  Paired strand views, category metadata, hotspot thresholds, and interpretation.
 
 ## Install
 
@@ -134,6 +148,9 @@ mdb merge -i sample_ont.smdb sample_pb.smdb -o cohort_modifiedc.mmdb -m
 ```
 
 ### 3b) Combine a legacy SniffCell Loyfer atlas with grouped ONT tracks
+
+For a workflow starting with your own methylation cohort, see
+[Build an input matrix for SniffCell find](docs/wiki/Building-SniffCell-find-inputs-with-mdb.md).
 
 The legacy SniffCell matrix is unresolved bisulfite modified-C signal, so it is
 stored as `modifiedC`. ONT `5mC` and `5hmC` remain separate MDB views; they are
@@ -288,7 +305,202 @@ wrote `groups.tsv.gz`; elapsed time depends on storage and CPU performance.
 For the de novo run, group discovery took 108 seconds; the remaining time was
 spent aggregating and compressing the six output views.
 
+### 6b) Export methylation phenotypes for TensorQTL
+
+See the [complete TensorQTL workflow](docs/wiki/Building-TensorQTL-inputs-with-mdb.md)
+for a step-by-step guide from input BED files to nominal cis-QTL mapping.
+
+Use a checkout containing this command; an older PyPI installation may not
+include it. From the checkout, install and verify:
+
+```bash
+python -m pip install -e .
+mdb export-tensorqtl --help
+```
+
+Export one assay/haplotype/strand view from an individual-CpG or grouped-CpG
+cohort as a [TensorQTL phenotype BED](https://github.com/broadinstitute/tensorqtl#input-formats):
+
+```bash
+mdb export-tensorqtl \
+  -i cohort.mmdb \
+  -o methylation.bed.gz \
+  --assay 5mC \
+  --haplotype combined \
+  --strand combined
+```
+
+Use a grouped database such as `cohort.decode.mmdb` as the input to export
+group-level phenotypes instead. The representation is detected automatically.
+Both NPY and Zarr backends are streamed in batches; no TensorQTL installation
+or GPU is required for export.
+
+For a regional export, add `--region chr20:30000000-30100000` (zero-based,
+half-open). This selects individual CpGs within the interval or groups that
+overlap it; group coordinates and original group IDs are retained in full.
+The receipt records rows considered and rows outside the selected region.
+
+The tab-delimited output has this header, followed by one phenotype per row:
+
+```text
+#chr\tstart\tend\tphenotype_id\tSAMPLE_1\tSAMPLE_2
+```
+
+Methylation is the phenotype, expressed as beta values in `[0, 1]`, with no
+normalization or transformation applied. Individual CpGs use a one-base BED
+interval at the C position and a `chrom:position` ID with a one-based position.
+Grouped rows retain their existing mean methylation, full zero-based half-open
+CpG-group bounds from `groups.npz`, and IDs matching `groups.tsv.gz`
+(`grouping_1`, `grouping_2`, etc.). TensorQTL uses those intervals when defining
+cis windows; grouped phenotypes are not anchored to a midpoint. Export each of
+`5mC`, `5hmC`, and `modifiedC` separately as needed.
+
+By default, rows with any missing selected-sample values and constant rows are
+removed. To retain rows observed in at least 80% of selected samples and
+explicitly fill their remaining missing cells with the observed row mean:
+
+```bash
+mdb export-tensorqtl -i cohort.mmdb -o methylation.imputed.bed.gz \
+  --min-frac-present 0.8 --missing mean
+```
+
+All-missing and constant rows are always excluded. Valid zero methylation is
+preserved. Read-depth thresholds were applied when creating the sample bundles;
+the merged cohort does not retain per-cell coverage for additional depth filtering.
+
+Use `--sample-file samples.txt` to select and order source samples, one ID per
+line. Use `--sample-map sample_map.tsv` to rename columns for genotype matching;
+the TSV requires `sample_id` and `genotype_id` headers. Samples omitted from the
+mapping keep their source IDs. Final column names must be unique, and at least
+two samples must be selected. Genotypes must contain matching sample IDs;
+covariate columns must use the phenotype sample IDs and ordering. Genomic
+coordinates must use the same reference build and
+chromosome naming as the genotype input. The exporter does not read or validate
+those external files.
+
+The output can end in `.bed` or `.bed.gz`. A companion
+`<output>.export.json` records the view, sample ordering, coordinates, missing
+policy, imputed-cell count, and numbers of exported and filtered rows. Existing
+outputs require `--overwrite`. The source database is read-only.
+
+Python API:
+
+```python
+import mdb
+
+summary = mdb.export_tensorqtl(
+    "cohort.mmdb", "methylation.bed.gz", assay="5mC",
+    samples=["SAMPLE_2", "SAMPLE_1"],
+)
+```
+
+Load the exported phenotypes in TensorQTL, then supply the matching genotypes
+and optional covariates for methylation QTL mapping:
+
+```python
+import tensorqtl
+
+phenotype_df, phenotype_pos_df = tensorqtl.read_phenotype_bed("methylation.bed.gz")
+```
+
+For example, export the same selected samples from individual-CpG and grouped
+cohorts, then run nominal cis-QTL mapping in an environment containing TensorQTL:
+
+```bash
+mdb export-tensorqtl -i cohort.mmdb -o cpgs.bed.gz \
+  --region chr20:30000000-30100000 \
+  --sample-file samples.txt --sample-map sample_map.tsv
+mdb export-tensorqtl -i cohort.denovo.mmdb -o groups.bed.gz \
+  --region chr20:30000000-30100000 \
+  --sample-file samples.txt --sample-map sample_map.tsv
+
+mkdir -p results/cpg results/group
+python -m tensorqtl /path/to/genotypes cpgs.bed.gz cpg_qtl \
+  --mode cis_nominal --window 100000 --output_dir results/cpg
+python -m tensorqtl /path/to/genotypes groups.bed.gz group_qtl \
+  --mode cis_nominal --window 100000 --output_dir results/group
+```
+
+Here `/path/to/genotypes` is a PLINK prefix, without the file extension, with
+matching sample IDs and chromosome names. Add `--covariates covariates.tsv`
+when supplying analysis covariates. Nominal outputs are written to
+`<prefix>.cis_qtl_pairs.<chromosome>.parquet`; these commands do not perform
+permutation testing or FDR adjustment.
+
+`--region` selects methylation phenotypes to export. TensorQTL's separate
+`--window` controls the maximum cis distance in base pairs, defaulting to
+1,000,000. For an individual CpG and SNP on the same chromosome, a pair is
+eligible when their distance is at most that value. Describing this as CpGs
+around each SNP or SNPs around each CpG gives the same pairs; TensorQTL
+internally searches variants around each phenotype. For a group, its full
+interval is expanded by the chosen
+distance on both sides, with boundary positions included. TensorQTL converts
+the BED start to one-based coordinates before matching genotype positions.
+
+The optional integration tests use TensorQTL's actual BED reader, nominal
+cis-QTL mapping, and permutations on synthetic donors, comparing regression
+results with SciPy for both individual/grouped CpGs and NPY/Zarr backends:
+
+```bash
+python -m pytest -q tests
+```
+
+The integration test module documents an isolated TensorQTL 1.0.10 environment
+and saves validation receipts with its outputs. Those tests are skipped when
+TensorQTL is unavailable; the exporter itself has no TensorQTL dependency.
+
+An opt-in SMaHT real-data spot check is available separately. It reads bounded
+regions from the two source cohorts, selects one methylation sample per donor,
+and uses exact called SNPs shared across matching donor VCFs. In the same
+TensorQTL environment, with PLINK2 available, run:
+
+```bash
+python tests/run_real_tensorqtl_spotcheck.py \
+  --cpg-db /path/to/ont_cohort_zarr.mmdb \
+  --group-db /path/to/ont_cohort_zarr.denovo.mmdb \
+  --genotype-dir /path/to/DAC_phased_SNPs \
+  --outdir .cache/real_tensorqtl_spotcheck \
+  --region chr20:30000000-30100000 --window 100000
+```
+
+The runner executes both export commands and both subsequent TensorQTL commands
+with real data. Separate, clearly labeled simulated genotypes check exact
+cis-window boundaries. It saves the shell commands, raw outputs, source-value
+checks, and validation receipt. This small, selected sample is a software
+compatibility check; nominal association outputs have no biological interpretation.
+TensorQTL 1.0.10 can emit `slope_se=NaN` for exactly zero correlation while
+reporting `slope=0` and `p=1`. The runner records such pairs and their independent
+SciPy standard errors without changing the raw TensorQTL output.
+
+PacBio validation covers both `mod_score` count-mode BEDs and the original
+`discretized_mod_score` schema through create, merge, group, and export, with
+NPY and Zarr backends. An additional opt-in real-data check uses both PacBio
+cohorts and builds de novo groups from a small local copy of the count-based
+region across all source sample columns:
+
+```bash
+python tests/run_pacbio_tensorqtl_spotcheck.py \
+  --count-db /path/to/pacbio_by_count_cohort_zarr.mmdb \
+  --score-db /path/to/pacbio_cohort_zarr.mmdb \
+  --genotype-dir /path/to/DAC_phased_SNPs \
+  --outdir .cache/pacbio_tensorqtl_spotcheck \
+  --region chr20:30000000-30100000 --window 100000
+```
+
+It checks source values, raw missing/zero encodings, locally computed group
+means, sample mapping, and loaded alternate-allele dosages before running actual
+TensorQTL commands for individual count-mode CpGs, grouped count-mode CpGs,
+and individual original-score CpGs. Each run is checked against the specified
+cis window and an independent regression on TensorQTL's actual input precision.
+Nearly perfect correlations in these small donor subsets can expose
+TensorQTL's float32 precision limits in p-values and standard errors. The
+runner reports those comparisons separately, preserving the raw outputs;
+they are not claimed to match double-precision regression results.
+
 ### 7) Run PCA on cohort view
+
+See [PCA across tissues](docs/wiki/PCA-of-long-read-methylation-across-tissues.md)
+for cohort preparation, tissue metadata, and the meaning of the PCA settings.
 
 ```bash
 mdb pca \
@@ -493,6 +705,9 @@ Core outputs are `embedding.tsv`, `dmr_regions_used.bed`, `params.json`,
 `pca.html`, `pca_pairplot.html`, `pca_pairplot.png`, and `pca_umap.log`.
 
 ### 12) Detect strand-biased methylation hotspots
+
+See [Detect strand-specific methylation](docs/wiki/Detecting-strand-specific-methylation-with-mdb.md)
+for stranded input preparation, thresholds, and interpretation.
 
 `strand` requires a cohort store containing matching `plus` and `minus` views
 for the requested assay and haplotype:

@@ -174,6 +174,32 @@ def parse_args(argv):
     )
     group_parser.add_argument("--verbose", action="store_true", help="More stderr logging")
 
+    export_parser = subparsers.add_parser(
+        "export-tensorqtl",
+        help="Export individual or grouped CpG methylation as TensorQTL phenotype BED",
+    )
+    export_parser.add_argument("-i", "--input", required=True, help="Input cohort store (.mmdb), individual or grouped CpGs")
+    export_parser.add_argument("-o", "--output", required=True, help="Output phenotype .bed or .bed.gz file")
+    export_parser.add_argument("--assay", default="5mC", help="Assay view to export, default=5mC")
+    export_parser.add_argument("--haplotype", default="combined", help="Haplotype view to export, default=combined")
+    export_parser.add_argument("--strand", default="combined", help="Strand view to export, default=combined")
+    export_parser.add_argument(
+        "--region",
+        help="Restrict phenotype export to chrom:start-end (0-based, half-open); overlapping groups retain full bounds",
+    )
+    export_parser.add_argument("--sample-file", help="One source sample ID per line, selecting samples in the requested order")
+    export_parser.add_argument("--sample-map", help="TSV with sample_id and genotype_id headers, renaming sample columns")
+    export_parser.add_argument(
+        "--min-frac-present", type=float, default=1.0,
+        help="Minimum observed fraction of selected samples per phenotype, default=1.0",
+    )
+    export_parser.add_argument(
+        "--missing", choices=("drop", "mean"), default="drop",
+        help="Drop rows with missing values, or explicitly impute their observed row mean after filtering, default=drop",
+    )
+    export_parser.add_argument("--batch-rows", type=int, default=8192, help="Rows per streaming batch, default=8192")
+    export_parser.add_argument("--overwrite", action="store_true", help="Replace existing export files after a successful export")
+
     append_parser = subparsers.add_parser("append", help="Append sample bundles into an existing cohort store")
     append_parser.add_argument("-c", "--cohort", required=True, help="Existing cohort store path to update in place")
     append_parser.add_argument("-i", "--inputs", nargs="+", required=True, help="Input sample bundle directories, globs, or a .txt manifest")

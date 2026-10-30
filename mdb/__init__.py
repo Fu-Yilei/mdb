@@ -31,4 +31,10 @@ def group(*args, **kwargs):
     return _group(*args, **kwargs)
 
 
-__all__ = ["__version__", "asmpca", "stats", "viz", "plot", "group"]
+def export_tensorqtl(*args, **kwargs):
+    from mdb.export import export_tensorqtl as _export_tensorqtl
+
+    return _export_tensorqtl(*args, **kwargs)
+
+
+__all__ = ["__version__", "asmpca", "stats", "viz", "plot", "group", "export_tensorqtl"]

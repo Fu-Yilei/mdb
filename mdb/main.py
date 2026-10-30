@@ -23,6 +23,9 @@ def main(argv=None):
     elif args.command == "group":
         from mdb.grouping import grouping_main
         grouping_main(args)
+    elif args.command == "export-tensorqtl":
+        from mdb.export import export_tensorqtl_main
+        export_tensorqtl_main(args)
     elif args.command == "append":
         from mdb.merge import append_main
         append_main(args)
