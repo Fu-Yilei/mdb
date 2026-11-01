@@ -17,14 +17,16 @@ matrices for TensorQTL with `mdb export-tensorqtl`.
 
 ## Documentation
 
-- [Build methylation phenotype matrices for TensorQTL](docs/wiki/Building-TensorQTL-inputs-with-mdb.md):
+Browse the [GitHub Wiki](https://github.com/Fu-Yilei/mdb/wiki) for the complete workflows.
+
+- [Build methylation phenotype matrices for TensorQTL](https://github.com/Fu-Yilei/mdb/wiki/Building-TensorQTL-inputs-with-mdb):
   ONT and PacBio inputs, individual CpGs and groups, sample matching, missing
   values, and subsequent TensorQTL commands.
-- [Build an input matrix for SniffCell find](docs/wiki/Building-SniffCell-find-inputs-with-mdb.md):
+- [Build an input matrix for SniffCell find](https://github.com/Fu-Yilei/mdb/wiki/Building-SniffCell-find-inputs-with-mdb):
   Reference-matrix preparation and the SniffCell input contract.
-- [Run PCA across tissues](docs/wiki/PCA-of-long-read-methylation-across-tissues.md):
+- [Run PCA across tissues](https://github.com/Fu-Yilei/mdb/wiki/PCA-of-long-read-methylation-across-tissues):
   Long-read methylation cohorts, tissue metadata, feature selection, and PCA outputs.
-- [Detect strand-specific methylation](docs/wiki/Detecting-strand-specific-methylation-with-mdb.md):
+- [Detect strand-specific methylation](https://github.com/Fu-Yilei/mdb/wiki/Detecting-strand-specific-methylation-with-mdb):
   Paired strand views, category metadata, hotspot thresholds, and interpretation.
 
 ## Install
@@ -150,7 +152,7 @@ mdb merge -i sample_ont.smdb sample_pb.smdb -o cohort_modifiedc.mmdb -m
 ### 3b) Combine a legacy SniffCell Loyfer atlas with grouped ONT tracks
 
 For a workflow starting with your own methylation cohort, see
-[Build an input matrix for SniffCell find](docs/wiki/Building-SniffCell-find-inputs-with-mdb.md).
+[Build an input matrix for SniffCell find](https://github.com/Fu-Yilei/mdb/wiki/Building-SniffCell-find-inputs-with-mdb).
 
 The legacy SniffCell matrix is unresolved bisulfite modified-C signal, so it is
 stored as `modifiedC`. ONT `5mC` and `5hmC` remain separate MDB views; they are
@@ -307,7 +309,7 @@ spent aggregating and compressing the six output views.
 
 ### 6b) Export methylation phenotypes for TensorQTL
 
-See the [complete TensorQTL workflow](docs/wiki/Building-TensorQTL-inputs-with-mdb.md)
+See the [complete TensorQTL workflow](https://github.com/Fu-Yilei/mdb/wiki/Building-TensorQTL-inputs-with-mdb)
 for a step-by-step guide from input BED files to nominal cis-QTL mapping.
 
 The command is available in `methdb` 0.0.7 and later. Install and verify:
@@ -498,7 +500,7 @@ they are not claimed to match double-precision regression results.
 
 ### 7) Run PCA on cohort view
 
-See [PCA across tissues](docs/wiki/PCA-of-long-read-methylation-across-tissues.md)
+See [PCA across tissues](https://github.com/Fu-Yilei/mdb/wiki/PCA-of-long-read-methylation-across-tissues)
 for cohort preparation, tissue metadata, and the meaning of the PCA settings.
 
 ```bash
@@ -705,7 +707,7 @@ Core outputs are `embedding.tsv`, `dmr_regions_used.bed`, `params.json`,
 
 ### 12) Detect strand-biased methylation hotspots
 
-See [Detect strand-specific methylation](docs/wiki/Detecting-strand-specific-methylation-with-mdb.md)
+See [Detect strand-specific methylation](https://github.com/Fu-Yilei/mdb/wiki/Detecting-strand-specific-methylation-with-mdb)
 for stranded input preparation, thresholds, and interpretation.
 
 `strand` requires a cohort store containing matching `plus` and `minus` views
