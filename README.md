@@ -310,11 +310,10 @@ spent aggregating and compressing the six output views.
 See the [complete TensorQTL workflow](docs/wiki/Building-TensorQTL-inputs-with-mdb.md)
 for a step-by-step guide from input BED files to nominal cis-QTL mapping.
 
-Use a checkout containing this command; an older PyPI installation may not
-include it. From the checkout, install and verify:
+The command is available in `methdb` 0.0.7 and later. Install and verify:
 
 ```bash
-python -m pip install -e .
+python -m pip install --upgrade 'methdb>=0.0.7'
 mdb export-tensorqtl --help
 ```
 

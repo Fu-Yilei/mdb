@@ -10,18 +10,19 @@ CpG or CpG group, with samples in columns and beta values between 0 and 1.
 The grouped export uses existing group means. It does not aggregate again.
 Genotypes and covariates are separate inputs to TensorQTL.
 
-## 1. Install the checkout containing the exporter
+## 1. Install MDB 0.0.7 or later
 
-From a local mdb checkout containing this command:
+Install the release containing the exporter:
 
 ```bash
-python -m pip install -e .
+python -m pip install --upgrade 'methdb>=0.0.7'
 mdb export-tensorqtl --help
 mkdir -p bundles cohorts phenotypes results/cpg results/group
 ```
 
-The package is named `methdb`; its command is `mdb`. An older PyPI installation
-may lack the exporter: verify its help after installing this checkout.
+The package is named `methdb`; its command is `mdb`. From a local source
+checkout, use `python -m pip install -e .` instead. Older releases lack the
+exporter, so verify its help after installation.
 Export requires neither TensorQTL nor a GPU. Mapping uses a separate TensorQTL
 installation; compatibility was tested with TensorQTL 1.0.10 on CPU. Follow
 the [official installation instructions](https://github.com/broadinstitute/tensorqtl#install)
