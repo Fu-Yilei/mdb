@@ -22,6 +22,10 @@ def parse_args(argv):
 
     create_parser = subparsers.add_parser("create", help="Create a sample bundle directory (.smdb)")
     create_parser.add_argument("-p", "--platform", required=True, help="Input platform: ont|pacbio")
+    create_parser.add_argument(
+        "--input-format", choices=("modkit", "pb-cpg-tools", "methbat"),
+        help="BED format; default=modkit for ont, pb-cpg-tools for pacbio. Use methbat for unified MethBat pileups",
+    )
     create_parser.add_argument("-n", "--npz", required=True, help="Reference NPZ file from mdb index")
     create_parser.add_argument("-b", "--bed", required=True, help="Input BED file, BED prefix, or BED directory")
     create_parser.add_argument("-o", "--output", required=True, help="Output sample bundle directory path")

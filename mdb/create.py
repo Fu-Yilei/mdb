@@ -1,4 +1,6 @@
+import json
 import os
+from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
@@ -82,13 +84,31 @@ def create_main(args, logger=None):
     if platform not in {"ont", "pacbio"}:
         raise ValueError(f"Unsupported platform: {platform}, supported platforms are 'ont' and 'pacbio'")
 
+    input_format = getattr(args, "input_format", None) or {"ont": "modkit", "pacbio": "pb-cpg-tools"}[platform]
+    expected_platform = {"modkit": "ont", "pb-cpg-tools": "pacbio", "methbat": "pacbio"}
+    if input_format not in expected_platform or expected_platform[input_format] != platform:
+        raise ValueError(f"Input format {input_format!r} is incompatible with platform {platform!r}")
+
     chroms, _chrom_offsets, pos0, chrom_slices, allowed_chroms = load_index(index_npz)
     print(f"Loaded index: {index_npz} with {len(chroms)} chromosomes and {pos0.shape[0]} CpGs")
 
     tracks: dict[TrackKey, SampleTrack] = {}
     bed_map: Dict[str, str] = {}
+    import_report = None
 
-    if platform == "ont":
+    if input_format == "methbat":
+        from mdb.methbat_bed_parsing import discover_methbat_beds, methbat_bed_parsing
+
+        # write_sample_bundle replaces its output directory. Protect source files
+        # and the index, including paths reached through symlinks.
+        output_path = Path(output_mdb).resolve()
+        sources, ignored = discover_methbat_beds(bed_path)
+        for source in [*sources, *ignored, Path(index_npz).resolve()]:
+            if source == output_path or output_path in source.parents:
+                raise ValueError("MethBat output directory must not contain an input BED or the reference index")
+        tracks, import_report = methbat_bed_parsing(bed_path, chrom_slices, pos0, min_cov)
+        bed_map = {key.name(): track.source_path for key, track in tracks.items()}
+    elif platform == "ont":
         _stats, matrices, bed_map = ont_bed_parsing(
             input_path=bed_path,
             chrom_slices=chrom_slices,
@@ -172,6 +192,13 @@ def create_main(args, logger=None):
     )
     write_sample_bundle(output_mdb, bundle)
     _write_bed_map(output_mdb, bed_map)
+    if import_report is not None:
+        with open(os.path.join(output_mdb, "import_summary.json"), "w") as handle:
+            json.dump(import_report, handle, indent=2)
+        imported = sum(len(track.row_ids) for track in tracks.values())
+        print(f"Imported {imported} MethBat CpG track observations; see import_summary.json for filtered rows")
+        if import_report["ignored_6mA_files"]:
+            print("Skipped 6mA file(s): 6mA is not supported by the CpG index")
 
     print(f"Wrote sample bundle: {output_mdb}")
     print(f"Sample ID: {sample_id}")
