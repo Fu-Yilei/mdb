@@ -499,8 +499,19 @@ python -m pytest -q tests
 ```
 
 The integration test module documents an isolated TensorQTL 1.0.10 environment
-and saves validation receipts with its outputs. Those tests are skipped when
-TensorQTL is unavailable; the exporter itself has no TensorQTL dependency.
+under `.cache/environments/tensorqtl-1.0.10` and saves validation receipts with
+its outputs. It covers both direct matrix inputs and synthetic MethBat BEDs
+through create, merge, grouped/individual export, and actual TensorQTL mapping.
+For a validation run that must include TensorQTL, use:
+
+```bash
+MDB_REQUIRE_TENSORQTL=1 .cache/environments/tensorqtl-1.0.10/bin/python \
+  -m pytest -q tests --basetemp=.cache/tensorqtl_validation
+```
+
+The flag makes a missing TensorQTL installation fail instead of skip. Ordinary
+test runs still skip the optional integration module when TensorQTL is
+unavailable; the exporter itself has no TensorQTL dependency.
 
 An opt-in SMaHT real-data spot check is available separately. It reads bounded
 regions from the two source cohorts, selects one methylation sample per donor,

@@ -4,12 +4,12 @@ TensorQTL is deliberately optional for ordinary methdb installs. To reproduce
 the tested environment without changing the base interpreter or adding a
 TensorQTL runtime dependency to methdb::
 
-    python -m venv --system-site-packages /tmp/mdb-tensorqtl-validation
-    uv pip install --python /tmp/mdb-tensorqtl-validation/bin/python --no-deps \
+    python -m venv --system-site-packages .cache/environments/tensorqtl-1.0.10
+    uv pip install --python .cache/environments/tensorqtl-1.0.10/bin/python --no-deps \
         tensorqtl==1.0.10 pandas-plink==2.2.9 pgenlib==0.95.1 qtl==0.1.10 \
-        Deprecated==1.3.1 bx-python==0.16.0 pyBigWig==0.3.29
+        Deprecated==1.3.1 bx-python==0.16.0 pyBigWig==0.3.29 pandera==0.35.0
     mkdir -p .cache
-    /tmp/mdb-tensorqtl-validation/bin/python -m pytest \
+    MDB_REQUIRE_TENSORQTL=1 .cache/environments/tensorqtl-1.0.10/bin/python -m pytest \
         tests/test_tensorqtl_export.py tests/test_tensorqtl_integration.py -q \
         --basetemp=.cache/tensorqtl_validation
 
@@ -20,12 +20,16 @@ Each integration case saves exported BED/receipt, genotype input, nominal
 association parquet, permutation results, and a validation JSON receipt under
 its pytest temporary directory. These are synthetic software checks, with no
 claim about any production cohort or biological association.
+MDB_REQUIRE_TENSORQTL=1 makes a missing installation fail collection instead
+of skipping this module. The shared project environment avoids node-local
+/tmp environments disappearing between validation runs.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import platform
 import sys
 from pathlib import Path
@@ -35,17 +39,53 @@ import pandas as pd
 import pytest
 from scipy.stats import linregress
 
-tensorqtl = pytest.importorskip("tensorqtl", reason="Optional actual TensorQTL integration dependency is not installed")
+if os.environ.get("MDB_REQUIRE_TENSORQTL") == "1":
+    import tensorqtl
+else:
+    tensorqtl = pytest.importorskip("tensorqtl", reason="Optional actual TensorQTL integration dependency is not installed")
 import torch  # noqa: E402
 from tensorqtl import cis  # noqa: E402
 
 from mdb.export import export_tensorqtl  # noqa: E402
+from mdb.main import main  # noqa: E402
+from test_methbat_workflow import write_bed  # noqa: E402
 from test_tensorqtl_export import build_cohort, build_grouped_cohort  # noqa: E402
+
+
+def build_methbat_cohort(path, methylation, *, backend, positions, sample_ids):
+    """Exercise MethBat BED import through the public CLI before actual QTLs."""
+    reference = path.parent / "reference.fa"
+    sequence = list("A" * (max(positions) + 2))
+    for pos in positions:
+        sequence[pos:pos + 2] = "CG"
+    reference.write_text(">chr1\n" + "".join(sequence) + "\n")
+    index = path.parent / "reference.npz"
+    main(["index", "-r", str(reference), "-o", str(index)])
+    bundles = []
+    for col, sample in enumerate(sample_ids):
+        bed = path.parent / f"{sample}.5mC.bed.gz"
+        rows = []
+        for row, pos in enumerate(positions):
+            mod_count = int(np.rint(methylation[row, col] * 1000))
+            rows.append([
+                "chr1", pos, pos + 1, "m", mod_count, ".", mod_count / 10,
+                "Total", 1000, mod_count, 1000 - mod_count, 0, 0, 0.9, 0.1,
+            ])
+        write_bed(bed, rows)
+        bundle = path.parent / f"{sample}.smdb"
+        main([
+            "create", "-p", "pacbio", "--input-format", "methbat", "-n", str(index),
+            "-b", str(bed), "-o", str(bundle), "--sample-id", sample,
+        ])
+        bundles.append(str(bundle))
+    main(["merge", "-i", *bundles, "-o", str(path), "--cohort-backend", backend])
+    return path
 
 
 @pytest.mark.parametrize("backend", ["npy", "zarr"])
 @pytest.mark.parametrize("grouped", [False, True], ids=["single_cpg", "grouped_cpg"])
-def test_actual_tensorqtl_nominal_and_permutation(tmp_path: Path, backend: str, grouped: bool) -> None:
+@pytest.mark.parametrize("input_format", ["matrix", "methbat"])
+def test_actual_tensorqtl_nominal_and_permutation(tmp_path: Path, backend: str, grouped: bool, input_format: str) -> None:
     seed = 20261030
     rng = np.random.default_rng(seed)
     n_samples = 48
@@ -60,7 +100,8 @@ def test_actual_tensorqtl_nominal_and_permutation(tmp_path: Path, backend: str, 
         0.40 - 0.10 * genotype_values[1] + rng.normal(0, 0.035, n_samples),
     ])
     assert ((methylation >= 0) & (methylation <= 1)).all()
-    source = build_cohort(
+    builder = build_methbat_cohort if input_format == "methbat" else build_cohort
+    source = builder(
         tmp_path / "source.mmdb", methylation, backend=backend,
         positions=[100, 103, 300, 310], sample_ids=source_sample_ids,
     )
@@ -79,6 +120,12 @@ def test_actual_tensorqtl_nominal_and_permutation(tmp_path: Path, backend: str, 
     assert phenotype_df.shape == (expected_rows, n_samples)
     assert phenotype_df.columns.tolist() == genotype_sample_ids[::-1]
     assert np.isfinite(phenotype_df.to_numpy()).all()
+    # These synthetic MethBat rows use tenths of a percent; matrix input uses
+    # the full MDB 1/10000 resolution. Group means round in integer units.
+    raw = np.rint(methylation * 1000) * 10 if input_format == "methbat" else np.rint(methylation * 10000)
+    if grouped:
+        raw = np.rint(np.stack([raw[:2].mean(axis=0), raw[2:].mean(axis=0)]))
+    np.testing.assert_allclose(phenotype_df.to_numpy(), raw[:, ::-1] / 10000, atol=1e-7)
     if grouped:
         # TensorQTL converts BED start to 1-based and retains the full interval.
         assert phenotype_pos_df[["start", "end"]].values.tolist() == [[101, 105], [301, 312]]
@@ -133,7 +180,7 @@ def test_actual_tensorqtl_nominal_and_permutation(tmp_path: Path, backend: str, 
     permutations.to_csv(tmp_path / "synthetic.cis_permutations.tsv", sep="\t")
 
     receipt = {
-        "status": "passed", "data": "synthetic only", "seed": seed,
+        "status": "passed", "data": "synthetic only", "seed": seed, "input_format": input_format,
         "backend": backend, "representation": "cpg_groups" if grouped else "individual_cpg",
         "phenotype": "methylation beta fraction [0,1]",
         "samples": n_samples, "phenotypes": expected_rows, "variants": len(genotype_ids),
