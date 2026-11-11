@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='methdb',
-    version='0.0.7',
+    version='0.0.8',
     packages=find_packages(),
     url='https://github.com/Fu-Yilei/mdb',
     license='MIT',
