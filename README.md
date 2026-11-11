@@ -115,6 +115,58 @@ a BED/BED.GZ file creates a `combined` track. Prefix or direct-file input is
 recommended. Do not rely on PacBio directory discovery in the current
 implementation; pass the prefix or a specific BED path instead.
 
+MethBat (PacBio pileups):
+
+```bash
+methbat pileup --threads 4 --input-bam sample.haplotagged.bam \
+  --output-prefix sample
+
+mdb create \
+  -p pacbio --input-format methbat \
+  -n GRCh38.cpg_index.npz \
+  -b sample \
+  -o sample.smdb \
+  -c 5 --sample-id SAMPLE
+```
+
+`--input-format` selects the BED format independently of the sequencing
+platform. When omitted, existing commands continue to use `modkit` for ONT
+and `pb-cpg-tools` for PacBio. MethBat requires `-p pacbio`.
+
+For MethBat, `-b` accepts an output prefix (loading its `.5mC.bed(.gz)` and
+`.5hmC.bed(.gz)` files) or one specific BED/BED.GZ file. The original files
+do not need conversion or splitting. The importer uses `mod_score` as a
+percentage and maps `Total`, `hap1`, and `hap2` to `combined`, `hp1`, and
+`hp2` tracks, respectively. It retains actual `cov` values in the sample
+bundle and filters each row independently with `-c`. Covered zero methylation
+remains distinct from missing data. MethBat's default pileup coverage threshold
+is 4; use `-c 4` to avoid imposing mdb's higher default threshold of 5.
+
+Only sites present in the supplied reference CpG index are imported:
+
+- 5mC uses the unstranded CpG `start` coordinate.
+- 5hmC retains separate plus/minus tracks. Reverse-strand coordinates are
+  shifted by one base to the reference CpG C; non-CpG sites are excluded.
+- 6mA cannot be represented by this CpG index. A prefix skips its `.6mA`
+  file with a message; selecting that file directly fails with an explanation.
+- Empty modification files are accepted alongside populated files. An import
+  with no matching, sufficiently covered CpGs fails before writing a bundle.
+
+`import_summary.json` records source metadata, imported observations by track,
+coverage-filtered and off-index rows, and skipped 6mA files. Use the same
+reference assembly and chromosome naming as the BAM. Other MethBat count and
+probability columns are not stored; this is not a lossless pileup archive.
+The existing cohort representation stores methylation values, not per-cell
+coverage. Duplicate CpGs within a track, invalid values, and sample coverage
+above the storage limit of 65,534 are rejected instead of silently overwritten
+or truncated.
+
+The sample bundle supports the usual merge, append, query, grouping, PCA,
+statistics, visualization, and TensorQTL-export workflows. MethBat's 5mC and
+5hmC tracks have different strand representations; `merge --modifiedc` only
+combines assays with matching haplotype and strand, so it does not sum the
+unstranded 5mC track with stranded 5hmC tracks.
+
 ### 3) Merge sample bundles into a cohort
 
 Default backend (`zarr`):
@@ -447,8 +499,19 @@ python -m pytest -q tests
 ```
 
 The integration test module documents an isolated TensorQTL 1.0.10 environment
-and saves validation receipts with its outputs. Those tests are skipped when
-TensorQTL is unavailable; the exporter itself has no TensorQTL dependency.
+under `.cache/environments/tensorqtl-1.0.10` and saves validation receipts with
+its outputs. It covers both direct matrix inputs and synthetic MethBat BEDs
+through create, merge, grouped/individual export, and actual TensorQTL mapping.
+For a validation run that must include TensorQTL, use:
+
+```bash
+MDB_REQUIRE_TENSORQTL=1 .cache/environments/tensorqtl-1.0.10/bin/python \
+  -m pytest -q tests --basetemp=.cache/tensorqtl_validation
+```
+
+The flag makes a missing TensorQTL installation fail instead of skip. Ordinary
+test runs still skip the optional integration module when TensorQTL is
+unavailable; the exporter itself has no TensorQTL dependency.
 
 An opt-in SMaHT real-data spot check is available separately. It reads bounded
 regions from the two source cohorts, selects one methylation sample per donor,
@@ -497,6 +560,29 @@ Nearly perfect correlations in these small donor subsets can expose
 TensorQTL's float32 precision limits in p-values and standard errors. The
 runner reports those comparisons separately, preserving the raw outputs;
 they are not claimed to match double-precision regression results.
+
+MethBat regression tests exercise direct/prefix input, all haplotypes, CpG
+5hmC strand normalization, coverage/missingness, and create → merge → append →
+query → group → export on both NPY and Zarr. The opt-in runner additionally
+uses the repository's chr20 test BAM and existing pb-CpG-tools BED triplet:
+
+```bash
+python -m pytest -q tests/test_methbat_workflow.py
+python tests/run_methbat_spotcheck.py \
+  --bam /path/to/test.chr20.haplotagged.bam \
+  --reference /path/to/GRCh38_no_alt.chr20.fa \
+  --legacy-prefix /path/to/test.chr20 \
+  --outdir .cache/methbat_spotcheck
+```
+
+MethBat must be on `PATH` (or supplied with `--methbat`). The output directory
+must be new. `--pileup-prefix` can reuse a completed pileup. The runner compares
+every imported value and coverage count with an independent BED reader,
+checks cohort matrices and grouped means, runs stats/PCA/viz/plot, and writes
+`validation.json`, command logs, and unchanged-input checksums. Its columns
+compare two import paths and the legacy result from one BAM; they are not
+independent biological samples. 5hmC requires separate synthetic coverage
+when the selected BAM contains only 5mC tags.
 
 ### 7) Run PCA on cohort view
 
